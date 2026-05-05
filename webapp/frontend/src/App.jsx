@@ -103,6 +103,8 @@ function App() {
   const [savedTablesError, setSavedTablesError] = useState('')
   const [savedTablesLoading, setSavedTablesLoading] = useState(false)
   const [selectedSavedTable, setSelectedSavedTable] = useState('')
+  const [visualZoom, setVisualZoom] = useState(1)
+  const [timeViewMode, setTimeViewMode] = useState('window')
   const autoSelectRequestedRef = useRef(false)
 
   const selectedTaker = useMemo(() => {
@@ -130,6 +132,33 @@ function App() {
     }
     return renderWindowLabel
   }, [renderMeta.plotEndLocal, renderMeta.plotStartLocal, renderWindowLabel])
+
+  const headerTimeLabel = useMemo(() => {
+    if (timeViewMode === 'update') {
+      return lastUpdateLocal ? `Atualizado às ${lastUpdateLocal}` : 'Atualização indisponível'
+    }
+
+    return `Janela: ${effectiveWindowLabel}`
+  }, [effectiveWindowLabel, lastUpdateLocal, timeViewMode])
+
+  const zoomLabel = useMemo(() => `${Math.round(visualZoom * 100)}%`, [visualZoom])
+
+  function cycleZoom() {
+    setVisualZoom((current) => {
+      if (current >= 1.24) return 1
+      if (current >= 1.12) return 1.24
+      return 1.12
+    })
+  }
+
+  function resetView() {
+    setVisualZoom(1)
+    setTimeViewMode('window')
+  }
+
+  function toggleTimeView() {
+    setTimeViewMode((current) => (current === 'window' ? 'update' : 'window'))
+  }
 
   async function loadTakers() {
     if (isLoadingTakersRef.current) return
@@ -568,284 +597,319 @@ function App() {
   }, [takerId, mode, startLocal, endLocal, initialLoadHours, backgroundIr])
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="topbarTitle">
-          <span>Visualizador de Raios</span>
+    <div className="appShell">
+      <header className="topBar">
+        <div className="topBarBrand">
+          <span className="topBarEyebrow">BlueOcean</span>
+          <strong>VISUALIZADOR DE RAIOS</strong>
+        </div>
+
+        <div className="topBarActions" aria-label="Ações de visualização">
+          <button type="button" className="topBarButton" onClick={cycleZoom}>
+            Zoom
+            <span className="topBarButtonValue">{zoomLabel}</span>
+          </button>
+          <button type="button" className="topBarButton" onClick={resetView}>
+            Redefinir
+          </button>
+          <button type="button" className="topBarButton" onClick={toggleTimeView}>
+            Horário
+            <span className="topBarButtonValue">{timeViewMode === 'window' ? 'Janela' : 'Atualização'}</span>
+          </button>
         </div>
       </header>
 
-      <main className="layout">
-        <section className="plotPane" aria-label="Mapa">
-          <div className="plotHeader">
-            <div className="plotHeaderText">
-              Última atualização:{' '}
-              <strong>{lastUpdateLocal ? `${lastUpdateLocal} horas local` : '—'}</strong>
+      <main className="dashboard">
+        <section className="primaryColumn" aria-label="Painel principal">
+          <article className="panel panelHero">
+            <div className="panelHeader panelHeaderSplit">
+              <div>
+                <span className="eyebrow">Visualização de Raios</span>
+                <strong>Mapa radar</strong>
+                <span className="panelSubline">{selectedTakerLabel} · {modeLabel}</span>
+              </div>
+
+              <div className="heroMetaPills">
+                <span className="metaPill">Zoom {zoomLabel}</span>
+                <span className="metaPill">{headerTimeLabel}</span>
+              </div>
             </div>
-            <div className="plotHeaderControls">
-              <button className="animBtn" type="button" onClick={() => (animating ? stopAnimation() : startAnimation())}>
+
+            <div className="plotStage">
+              {plotUrl ? (
+                <img
+                  className="plotImg"
+                  src={plotUrl}
+                  alt="Mapa de flashes e eventos"
+                  draggable={false}
+                  style={{ transform: `scale(${visualZoom})` }}
+                />
+              ) : (
+                <div className={`plotPlaceholder ${isRendering ? 'plotPlaceholderLoading' : ''}`}>
+                  <div className="plotPlaceholderCard">
+                    <strong>
+                      {renderError || takersError || (isRendering ? 'Renderizando...' : 'Aguardando render...')}
+                    </strong>
+                    <span>{selectedTakerLabel}</span>
+                    <span>{renderWindowLabel}</span>
+                  </div>
+                </div>
+              )}
+
+              {isRendering && plotUrl ? <div className="plotOverlay">Atualizando imagem...</div> : null}
+            </div>
+
+            <div className="panelFooterControls">
+              <button className="footerButton" type="button" onClick={() => (animating ? stopAnimation() : startAnimation())}>
                 {animating ? 'Pausar animação' : 'Reproduzir animação'}
               </button>
-              <label className="animLabel">Duração (h):
-                <select value={animHours} onChange={(e) => setAnimHours(Number(e.target.value))}>
+
+              <label className="footerField footerFieldInline" htmlFor="animHours">
+                <span>Duração (h)</span>
+                <select id="animHours" value={animHours} onChange={(e) => setAnimHours(Number(e.target.value))}>
                   <option value={1}>1</option>
                   <option value={2}>2</option>
                   <option value={3}>3</option>
                 </select>
               </label>
-              <button className="animBtn" type="button" onClick={saveCurrentFrame} disabled={!frames.length}>Salvar frame</button>
-              <div className="animStatus">{isPrefetching ? 'Preparando frames...' : frames.length ? `${frameIndex + 1}/${frames.length} • ${frames[frameIndex]?.ts || ''}` : ''}</div>
-            </div>
-          </div>
 
-          <div className="plotFrame">
-            {plotUrl ? (
-              <img className="plotImg" src={plotUrl} alt="Mapa de flashes/eventos" draggable={false} />
-            ) : (
-              <div className={`plotPlaceholder ${isRendering ? 'plotPlaceholderLoading' : ''}`}>
-                <div className="plotPlaceholderCard">
-                  <strong>
-                    {renderError ||
-                      takersError ||
-                      (isRendering ? 'Renderizando...' : 'Aguardando render...')}
-                  </strong>
-                  <span>{selectedTakerLabel}</span>
-                  <span>{renderWindowLabel}</span>
-                </div>
+              <button className="footerButton footerButtonSecondary" type="button" onClick={saveCurrentFrame} disabled={!frames.length}>
+                Salvar frame
+              </button>
+
+              <div className="animStatus compact">
+                {isPrefetching ? 'Preparando frames...' : frames.length ? `${frameIndex + 1}/${frames.length} • ${frames[frameIndex]?.ts || ''}` : ''}
               </div>
-            )}
-            {isRendering && plotUrl ? <div className="plotOverlay">Atualizando imagem...</div> : null}
-          </div>
+            </div>
+          </article>
 
-          <div className="plotSummary" aria-label="Resumo do render">
-            <div className="summaryItem">
-              <span className="summaryLabel">Tomador</span>
-              <strong>{selectedTakerLabel}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Janela efetiva</span>
-              <strong>{effectiveWindowLabel}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Modo</span>
-              <strong>{renderMeta.mode ? getModeLabel(Number(renderMeta.mode)) : modeLabel}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Overlay IR</span>
-              <strong>{renderMeta.background === '1' ? 'Ativo' : backgroundIr ? 'Ativo' : 'Desativado'}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Flashes renderizados</span>
-              <strong>{toIntOrDash(renderMeta.flashesCount)}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Eventos renderizados</span>
-              <strong>{toIntOrDash(renderMeta.eventsCount)}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Carga inicial</span>
-              <strong>{renderMeta.initialLoadHours ? `${renderMeta.initialLoadHours}h` : `${initialLoadHours}h`}</strong>
-            </div>
-            <div className="summaryItem">
-              <span className="summaryLabel">Atualização dinâmica</span>
-              <strong>
-                {renderMeta.dynamicStart === '1' || renderMeta.dynamicEnd === '1'
-                  ? 'Sim'
-                  : 'Não'}
-              </strong>
-            </div>
-          </div>
-        </section>
-
-        <aside className="controlsPane" aria-label="Controles">
-          <div className="brand">
-            <img className="brandLogo" src="/logo.png" alt="BLUEOCEAN" />
-          </div>
-
-          <div className="controls">
-            <div className="row">
-              <label htmlFor="taker">Tomador de Serviço:</label>
-              <select
-                id="taker"
-                value={takerId}
-                onChange={(e) => setTakerId(e.target.value)}
-                className="field"
-              >
-                {takers.map((t) => (
-                  <option key={t.id} value={String(t.id)}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+          <section className="panel panelSummary" aria-label="Resumo do render">
+            <div className="panelHeader">
+              <span className="eyebrow">Detalhes do parâmetro</span>
+              <strong>Resumo do render</strong>
             </div>
 
-            <div className="row">
-              <label htmlFor="start">Tempo inicial:</label>
-              <input
-                id="start"
-                type="datetime-local"
-                value={startLocal}
-                onChange={(e) => setStartLocal(e.target.value)}
-                className="field"
-              />
+            <div className="summaryGrid">
+              <div className="summaryItem">
+                <span className="summaryLabel">Tomador</span>
+                <strong>{selectedTakerLabel}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Janela efetiva</span>
+                <strong>{effectiveWindowLabel}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Modo</span>
+                <strong>{renderMeta.mode ? getModeLabel(Number(renderMeta.mode)) : modeLabel}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Overlay IR</span>
+                <strong>{renderMeta.background === '1' ? 'Ativo' : backgroundIr ? 'Ativo' : 'Desativado'}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Flashes renderizados</span>
+                <strong>{toIntOrDash(renderMeta.flashesCount)}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Eventos renderizados</span>
+                <strong>{toIntOrDash(renderMeta.eventsCount)}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Carga inicial</span>
+                <strong>{renderMeta.initialLoadHours ? `${renderMeta.initialLoadHours}h` : `${initialLoadHours}h`}</strong>
+              </div>
+              <div className="summaryItem">
+                <span className="summaryLabel">Atualização dinâmica</span>
+                <strong>{renderMeta.dynamicStart === '1' || renderMeta.dynamicEnd === '1' ? 'Sim' : 'Não'}</strong>
+              </div>
             </div>
+          </section>
 
-            <div className="row">
-              <label htmlFor="end">Tempo final:</label>
-              <input
-                id="end"
-                type="datetime-local"
-                value={endLocal}
-                onChange={(e) => setEndLocal(e.target.value)}
-                className="field"
-              />
-            </div>
-
-            <div className="row">
-              <label htmlFor="mode">Tipo de Imagem:</label>
-              <select
-                id="mode"
-                value={mode}
-                onChange={(e) => setMode(Number(e.target.value))}
-                className="field"
-              >
-                {MODES.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="row">
-              <label htmlFor="init">Carga inicial (horas):</label>
-              <input
-                id="init"
-                type="number"
-                min="0"
-                max="24"
-                value={initialLoadHours}
-                onChange={(e) => setInitialLoadHours(Number(e.target.value || 0))}
-                className="field"
-              />
-            </div>
-
-            <div className="row rowTight">
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={backgroundIr}
-                  onChange={(e) => setBackgroundIr(e.target.checked)}
-                />
-                <span>Overlay IR (ABI C13)</span>
-              </label>
-            </div>
-
-            {statusText ? <div className="status statusInfo">{statusText}</div> : null}
-
-            {tableStatus ? <div className="status statusInfo">{tableStatus}</div> : null}
-
-            <div className="tableActions">
-              <button className="tableBtn" type="button" onClick={generateTable} disabled={!selectedTaker || isGeneratingTable}>
-                {isGeneratingTable ? 'Gerando...' : 'Gerar tabela 4x24'}
-              </button>
-              <button className="tableBtn tableBtnSecondary" type="button" onClick={loadSavedTables} disabled={!selectedTaker || savedTablesLoading}>
-                {savedTablesLoading ? 'Atualizando...' : 'Carregar últimas tabelas salvas'}
-              </button>
-              <button className="tableBtn tableBtnSecondary" type="button" onClick={downloadCurrentTableCsv} disabled={!tableData?.values4x24?.length}>
-                Baixar tabela em CSV
-              </button>
-            </div>
-
-            {savedTablesError ? <div className="status">{savedTablesError}</div> : null}
-
-            <div className="tablePanel" aria-label="Tabela 4x288">
-              <div className="tablePanelHeader">
-                <div>
-                  <strong>Tabela 4x288 (5 min)</strong>
-                  <span>
-                    {tableData?.fileName
-                      ? `${tableData.fileName}`
-                      : selectedTakerLabel}
-                  </span>
-                </div>
-                {tableData?.savedAtLocal ? <span className="tablePanelMeta">Salva em {tableData.savedAtLocal}</span> : null}
+          <section className="panel panelTable" aria-label="Tabela 4x288">
+            <div className="panelHeader panelHeaderSplit">
+              <div>
+                <span className="eyebrow">Dados tabulares</span>
+                <strong>Tabela 4x288 (5 min)</strong>
+                <span className="panelSubline">{tableData?.fileName ? `${tableData.fileName}` : selectedTakerLabel}</span>
               </div>
 
-              {tableData?.values4x24?.length ? (
-                <div className="tableScroll">
-                  <table className="tableGrid">
-                    <thead>
-                      <tr>
-                        <th className="tableCorner">Anel \ Hora</th>
-                        {(tableData.hourLabels || []).map((hour) => (
-                          <th key={hour}>{hour}</th>
+              {tableData?.savedAtLocal ? <span className="panelBadge">Salva em {tableData.savedAtLocal}</span> : null}
+            </div>
+
+            {tableData?.values4x24?.length ? (
+              <div className="tableScroll">
+                <table className="tableGrid">
+                  <thead>
+                    <tr>
+                      <th className="tableCorner">Anel \ Hora</th>
+                      {(tableData.hourLabels || []).map((hour) => (
+                        <th key={hour}>{hour}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(tableData.values4x24 || []).map((row, rowIndex) => (
+                      <tr key={`${tableData.radiiLabels?.[rowIndex] || rowIndex}`}>
+                        <th>{tableData.radiiLabels?.[rowIndex] || `Linha ${rowIndex + 1}`}</th>
+                        {(tableData.hourLabels || []).map((hour, colIndex) => (
+                          <td key={`${hour}-${colIndex}`}>{row?.[colIndex] ?? 0}</td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {(tableData.values4x24 || []).map((row, rowIndex) => (
-                        <tr key={`${tableData.radiiLabels?.[rowIndex] || rowIndex}`}>
-                          <th>{tableData.radiiLabels?.[rowIndex] || `Linha ${rowIndex + 1}`}</th>
-                          {(tableData.hourLabels || []).map((hour, colIndex) => (
-                            <td key={`${hour}-${colIndex}`}>{row?.[colIndex] ?? 0}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="tableEmpty">
-                  <span>Gere uma tabela ou selecione uma tabela salva para visualizar os valores 4x24.</span>
-                </div>
-              )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="tableEmpty">
+                <span>Gere uma tabela ou selecione uma tabela salva para visualizar os valores 4x24.</span>
+              </div>
+            )}
+          </section>
+        </section>
+
+        <aside className="sidebarColumn" aria-label="Controles">
+          <section className="panel panelConfig">
+            <div className="panelHeader">
+              <span className="eyebrow">Configuração</span>
+              <strong>CONFIGURAÇÃO DE CONSULTA</strong>
             </div>
 
-            <div className="savedTablesPanel" aria-label="Últimas tabelas salvas">
-              <div className="savedTablesHeader">
-                <strong>Últimas tabelas salvas</strong>
-                <button type="button" className="savedTablesRefresh" onClick={loadSavedTables} disabled={!selectedTaker || savedTablesLoading}>
-                  Atualizar
-                </button>
+            <div className="controlStack">
+              <label className="fieldBlock" htmlFor="taker">
+                <span>Tomador de Serviço</span>
+                <div className="selectWrap">
+                  <select id="taker" value={takerId} onChange={(e) => setTakerId(e.target.value)}>
+                    {takers.map((t) => (
+                      <option key={t.id} value={String(t.id)}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </label>
+
+              <label className="fieldBlock" htmlFor="mode">
+                <span>Tipo de Imagem</span>
+                <div className="selectWrap">
+                  <select id="mode" value={mode} onChange={(e) => setMode(Number(e.target.value))}>
+                    {MODES.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </label>
+
+              <div className="splitInputs">
+                <label className="fieldBlock" htmlFor="start">
+                  <span>Tempo inicial</span>
+                  <input id="start" type="datetime-local" value={startLocal} onChange={(e) => setStartLocal(e.target.value)} />
+                </label>
+
+                <label className="fieldBlock" htmlFor="end">
+                  <span>Tempo final</span>
+                  <input id="end" type="datetime-local" value={endLocal} onChange={(e) => setEndLocal(e.target.value)} />
+                </label>
               </div>
 
-              {savedTables.length > 0 ? (
-                <div className="savedTablesList">
-                  {savedTables.map((item) => {
-                    const isActive = item.relativePath === selectedSavedTable
-                    return (
-                      <button
-                        key={item.relativePath}
-                        type="button"
-                        className={`savedTableItem ${isActive ? 'savedTableItemActive' : ''}`}
-                        onClick={() => loadSavedTable(item.relativePath)}
-                      >
-                        <span className="savedTableItemTitle">{formatSavedTableLabel(item)}</span>
-                        <span className="savedTableItemPath">{item.relativePath}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="tableEmpty small">
-                  <span>{savedTablesLoading ? 'Buscando tabelas...' : 'Nenhuma tabela salva encontrada para este tomador.'}</span>
-                </div>
-              )}
-            </div>
+              <label className="fieldBlock fieldBlockInline fieldBlockCheckbox">
+                <input type="checkbox" checked={backgroundIr} onChange={(e) => setBackgroundIr(e.target.checked)} />
+                <span>Overlay IR (ABI C13)</span>
+              </label>
 
-            <div className="downloadRow">
-              <button className="downloadBtn" type="button" onClick={downloadCurrentImage} disabled={!plotUrl}>
-                <span>Fazer o Download da Imagem</span>
-                <svg viewBox="0 0 24 24" className="downloadIcon" aria-hidden="true">
-                  <path
-                    d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z"
-                    fill="currentColor"
-                  />
-                </svg>
+              <label className="fieldBlock" htmlFor="init">
+                <span>Carga inicial (horas)</span>
+                <input id="init" type="number" min="0" max="24" value={initialLoadHours} onChange={(e) => setInitialLoadHours(Number(e.target.value || 0))} />
+              </label>
+
+              {statusText ? <div className="statusCard statusCardInfo">{statusText}</div> : null}
+
+              {tableStatus ? <div className="statusCard statusCardInfo">{tableStatus}</div> : null}
+
+              <button className="primaryAction" type="button" onClick={generateTable} disabled={!selectedTaker || isGeneratingTable}>
+                <span>{isGeneratingTable ? 'Gerando...' : 'Gerar tabela 4x24'}</span>
+                <span className={`spinner ${isGeneratingTable ? 'spinnerActive' : ''}`} aria-hidden="true" />
+              </button>
+
+              <button className="secondaryAction" type="button" onClick={loadSavedTables} disabled={!selectedTaker || savedTablesLoading}>
+                {savedTablesLoading ? 'Atualizando...' : 'Carregar últimas tabelas salvas'}
               </button>
             </div>
-          </div>
+          </section>
+
+          <section className="panel panelHistory">
+            <div className="panelHeader panelHeaderSplit">
+              <div>
+                <span className="eyebrow">Dados salvos</span>
+                <strong>HISTÓRICO DE TABELAS</strong>
+              </div>
+
+              <button type="button" className="ghostAction" onClick={loadSavedTables} disabled={!selectedTaker || savedTablesLoading}>
+                Atualizar
+              </button>
+            </div>
+
+            {savedTablesError ? <div className="statusCard">{savedTablesError}</div> : null}
+
+            {savedTables.length > 0 ? (
+              <div className="savedTablesList">
+                {savedTables.map((item) => {
+                  const isActive = item.relativePath === selectedSavedTable
+                  return (
+                    <button
+                      key={item.relativePath}
+                      type="button"
+                      className={`savedTableItem ${isActive ? 'savedTableItemActive' : ''}`}
+                      onClick={() => loadSavedTable(item.relativePath)}
+                    >
+                      <span className="savedTableItemTitle">{formatSavedTableLabel(item)}</span>
+                      <span className="savedTableItemPath">{item.relativePath}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="tableEmpty small">
+                <span>{savedTablesLoading ? 'Buscando tabelas...' : 'Nenhuma tabela salva encontrada para este tomador.'}</span>
+              </div>
+            )}
+          </section>
+
+          <section className="panel panelDownloads">
+            <div className="panelHeader">
+              <span className="eyebrow">Exportação</span>
+              <strong>DOWNLOAD DE DADOS</strong>
+            </div>
+
+            <div className="downloadCards">
+              <article className="downloadCard">
+                <div className="downloadCardIcon downloadCardIconPrimary" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" fill="currentColor" />
+                  </svg>
+                </div>
+                <div className="downloadCardBody">
+                  <strong>Imagem PNG</strong>
+                  <span>Baixe a visualização atual com o layout completo do render.</span>
+                </div>
+                <button className="downloadCardButton" type="button" onClick={downloadCurrentImage} disabled={!plotUrl}>
+                  Baixar
+                </button>
+              </article>
+
+              <article className="downloadCard">
+                <div className="downloadCardIcon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M5 4a2 2 0 0 1 2-2h6.59a2 2 0 0 1 1.41.59l4.41 4.41A2 2 0 0 1 20 8.41V20a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4Zm8 0v4h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <div className="downloadCardBody">
+                  <strong>Tabela CSV</strong>
+                  <span>Exporte a tabela 4x288 gerada ou carregada no painel.</span>
+                </div>
+                <button className="downloadCardButton" type="button" onClick={downloadCurrentTableCsv} disabled={!tableData?.values4x24?.length}>
+                  Baixar
+                </button>
+              </article>
+            </div>
+          </section>
         </aside>
       </main>
     </div>
