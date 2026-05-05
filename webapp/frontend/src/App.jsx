@@ -103,7 +103,6 @@ function App() {
   const [savedTablesError, setSavedTablesError] = useState('')
   const [savedTablesLoading, setSavedTablesLoading] = useState(false)
   const [selectedSavedTable, setSelectedSavedTable] = useState('')
-  const [visualZoom, setVisualZoom] = useState(1)
   const [timeViewMode, setTimeViewMode] = useState('window')
   const autoSelectRequestedRef = useRef(false)
 
@@ -141,18 +140,7 @@ function App() {
     return `Janela: ${effectiveWindowLabel}`
   }, [effectiveWindowLabel, lastUpdateLocal, timeViewMode])
 
-  const zoomLabel = useMemo(() => `${Math.round(visualZoom * 100)}%`, [visualZoom])
-
-  function cycleZoom() {
-    setVisualZoom((current) => {
-      if (current >= 1.24) return 1
-      if (current >= 1.12) return 1.24
-      return 1.12
-    })
-  }
-
   function resetView() {
-    setVisualZoom(1)
     setTimeViewMode('window')
   }
 
@@ -600,15 +588,14 @@ function App() {
     <div className="appShell">
       <header className="topBar">
         <div className="topBarBrand">
-          <span className="topBarEyebrow">BlueOcean</span>
-          <strong>VISUALIZADOR DE RAIOS</strong>
+          <img className="topBarLogo" src="/logo.png" alt="BlueOcean" />
+          <div className="topBarBrandText">
+            <span className="topBarEyebrow">BlueOcean</span>
+            <strong>VISUALIZADOR DE RAIOS</strong>
+          </div>
         </div>
 
         <div className="topBarActions" aria-label="Ações de visualização">
-          <button type="button" className="topBarButton" onClick={cycleZoom}>
-            Zoom
-            <span className="topBarButtonValue">{zoomLabel}</span>
-          </button>
           <button type="button" className="topBarButton" onClick={resetView}>
             Redefinir
           </button>
@@ -625,12 +612,10 @@ function App() {
             <div className="panelHeader panelHeaderSplit">
               <div>
                 <span className="eyebrow">Visualização de Raios</span>
-                <strong>Mapa radar</strong>
                 <span className="panelSubline">{selectedTakerLabel} · {modeLabel}</span>
               </div>
 
               <div className="heroMetaPills">
-                <span className="metaPill">Zoom {zoomLabel}</span>
                 <span className="metaPill">{headerTimeLabel}</span>
               </div>
             </div>
@@ -642,7 +627,6 @@ function App() {
                   src={plotUrl}
                   alt="Mapa de flashes e eventos"
                   draggable={false}
-                  style={{ transform: `scale(${visualZoom})` }}
                 />
               ) : (
                 <div className={`plotPlaceholder ${isRendering ? 'plotPlaceholderLoading' : ''}`}>
@@ -809,9 +793,17 @@ function App() {
                 </label>
               </div>
 
-              <label className="fieldBlock fieldBlockInline fieldBlockCheckbox">
-                <input type="checkbox" checked={backgroundIr} onChange={(e) => setBackgroundIr(e.target.checked)} />
-                <span>Overlay IR (ABI C13)</span>
+              <label className="fieldBlock fieldBlockToggle">
+                <div className="toggleCopy">
+                  <span>Overlay IR (ABI C13)</span>
+                  <small>Camada infravermelha do fundo de satélite.</small>
+                </div>
+                <div className="toggleSwitchWrap">
+                  <input type="checkbox" checked={backgroundIr} onChange={(e) => setBackgroundIr(e.target.checked)} />
+                  <span className={`toggleSwitch ${backgroundIr ? 'toggleSwitchOn' : ''}`} aria-hidden="true">
+                    <span className="toggleThumb" />
+                  </span>
+                </div>
               </label>
 
               <label className="fieldBlock" htmlFor="init">
@@ -824,7 +816,7 @@ function App() {
               {tableStatus ? <div className="statusCard statusCardInfo">{tableStatus}</div> : null}
 
               <button className="primaryAction" type="button" onClick={generateTable} disabled={!selectedTaker || isGeneratingTable}>
-                <span>{isGeneratingTable ? 'Gerando...' : 'Gerar tabela 4x24'}</span>
+                <span>{isGeneratingTable ? 'Gerando...' : 'Gerar Tabela'}</span>
                 <span className={`spinner ${isGeneratingTable ? 'spinnerActive' : ''}`} aria-hidden="true" />
               </button>
 

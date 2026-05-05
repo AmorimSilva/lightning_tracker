@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import textwrap
+from functools import lru_cache
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from io import BytesIO
@@ -22,6 +23,16 @@ from matplotlib.colors import Colormap
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
+
+try:
+    import geobr  # type: ignore
+except Exception:
+    geobr = None
+
+try:
+    import geopandas as gpd  # type: ignore
+except Exception:
+    gpd = None
 
 from .background import AbiIrBackgroundProvider
 from .config import load_settings
@@ -176,6 +187,101 @@ def _plot_rings(ax, *, lat0: float, lon0: float, radii_km: list[float], label: s
     title = textwrap.fill(title, width=28)
 
     return handles, labels, title
+
+
+@lru_cache(maxsize=1)
+def _load_state_boundaries():
+    if geobr is None or gpd is None:
+        return None
+    try:
+        return geobr.read_state(year=2020).to_crs(4326)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _load_municipality_boundaries():
+    if geobr is None or gpd is None:
+        return None
+    try:
+        return geobr.read_municipality(year=2020).to_crs(4326)
+    except Exception:
+        return None
+
+
+def _plot_admin_shapes(ax, *, lat0: float, lon0: float) -> None:
+    if geobr is None or gpd is None:
+        return
+
+    states = _load_state_boundaries()
+    municipalities = _load_municipality_boundaries()
+    if states is None or states.empty or municipalities is None or municipalities.empty:
+        return
+
+    point = gpd.GeoDataFrame(geometry=gpd.points_from_xy([lon0], [lat0]), crs="EPSG:4326")
+
+    try:
+        state_join = gpd.sjoin(point, states, how="left", predicate="within")
+    except Exception:
+        state_join = gpd.sjoin(point, states, how="left", predicate="intersects")
+
+    if state_join.empty or "index_right" not in state_join.columns:
+        return
+
+    state_idx = state_join.iloc[0].get("index_right")
+    if pd.isna(state_idx):
+        return
+
+    try:
+        state_geom = states.loc[int(state_idx)].geometry
+    except Exception:
+        state_geom = None
+
+    muni_pool = municipalities
+    state_code = None
+    if state_idx is not None:
+        try:
+            state_row = states.loc[int(state_idx)]
+            state_code = state_row.get("code_state")
+        except Exception:
+            state_code = None
+
+    if state_code is not None and "code_state" in municipalities.columns:
+        muni_pool = municipalities[municipalities["code_state"] == state_code]
+        if muni_pool.empty:
+            muni_pool = municipalities
+
+    try:
+        muni_join = gpd.sjoin(point, muni_pool, how="left", predicate="within")
+    except Exception:
+        muni_join = gpd.sjoin(point, muni_pool, how="left", predicate="intersects")
+
+    muni_geom = None
+    if not muni_join.empty and "index_right" in muni_join.columns:
+        muni_idx = muni_join.iloc[0].get("index_right")
+        if not pd.isna(muni_idx):
+            try:
+                muni_geom = muni_pool.loc[int(muni_idx)].geometry
+            except Exception:
+                muni_geom = None
+
+    if state_geom is not None:
+        gpd.GeoSeries([state_geom], crs="EPSG:4326").plot(
+            ax=ax,
+            facecolor=(1.0, 1.0, 1.0, 0.08),
+            edgecolor="#ffffff",
+            linewidth=1.8,
+            zorder=1.15,
+        )
+
+    if muni_geom is not None:
+        gpd.GeoSeries([muni_geom], crs="EPSG:4326").plot(
+            ax=ax,
+            facecolor="none",
+            edgecolor="#000000",
+            linewidth=1.4,
+            zorder=1.25,
+        )
 
 
 def _load_logo_image() -> np.ndarray | None:
@@ -440,6 +546,8 @@ def render_png(
         # NOTE: do not clip the background to the 200 km ring — keep full ABI overlay so
         # flashes and IR remain visible. Previous iteration clipped the background which
         # hid content; reverting to unmasked background.
+
+    _plot_admin_shapes(ax, lat0=params.lat0, lon0=params.lon0)
 
     ring_handles, ring_labels, ring_title = _plot_rings(
         ax,
