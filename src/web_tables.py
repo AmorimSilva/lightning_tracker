@@ -16,7 +16,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 from .archiver import HourlyArchiver
 from .config import load_settings
-from .core import _hour_labels, _radii_labels, _slug, compute_table_4x24
+from .core import _radii_labels, _slug, compute_table_4x5min, _5min_time_labels_for_date
 from .downloader import GLMDownloader
 from .processor import extract_points_from_lcfa
 
@@ -90,12 +90,15 @@ def build_table_result(*, settings_path: Path, taker_name: str, lat0: float, lon
 
     lag = timedelta(seconds=int(settings.aws_availability_lag_sec))
     end_utc = min(_to_utc(end_local), datetime.now(timezone.utc) - lag)
-    start_utc = end_utc - timedelta(hours=24)
+    # Anchor to local date midnight
+    local_midnight = end_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = _to_utc(local_midnight)
 
     flashes_df = _download_flashes(settings, start_utc, end_utc)
-    table_4x24 = compute_table_4x24(flashes_df, lat0=lat0, lon0=lon0, radii_km=settings.radii_km, end_local=end_local)
+    # Use 5-minute bins anchored to the local date (00:00..23:55)
+    table_4x5min = compute_table_4x5min(flashes_df, lat0=lat0, lon0=lon0, radii_km=settings.radii_km, date_local=end_local)
 
-    hour_labels = _hour_labels(end_local)
+    hour_labels = _5min_time_labels_for_date(end_local)
     radii_labels = _radii_labels(settings.radii_km)
 
     archiver = HourlyArchiver(
@@ -106,7 +109,7 @@ def build_table_result(*, settings_path: Path, taker_name: str, lat0: float, lon
     )
     taker_slug = _slug(taker_name)
     csv_path = archiver.save_table_csv(
-        table_4x24,
+        table_4x5min,
         dt_local=end_local,
         taker_slug=taker_slug,
         hours_labels=hour_labels,
@@ -126,7 +129,7 @@ def build_table_result(*, settings_path: Path, taker_name: str, lat0: float, lon
         end_local=end_local.strftime("%Y-%m-%d %H:%M:%S"),
         hour_labels=hour_labels,
         radii_labels=radii_labels,
-        values_4x24=table_4x24.astype(int).tolist(),
+        values_4x24=table_4x5min.astype(int).tolist(),
     )
 
 

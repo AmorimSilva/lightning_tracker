@@ -65,6 +65,12 @@ def _hour_labels(end_local: datetime) -> list[str]:
     return [(start_hour + timedelta(hours=i)).strftime("%H") for i in range(24)]
 
 
+def _5min_time_labels_for_date(date_local: datetime) -> list[str]:
+    # Returns 288 labels from 00:00 to 23:55 in HH:MM format for the given local date
+    base = date_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return [(base + timedelta(minutes=5 * i)).strftime("%H:%M") for i in range(288)]
+
+
 def _radii_labels(radii_km: list[float]) -> list[str]:
     rs = radii_km
     return [
@@ -110,6 +116,59 @@ def compute_table_4x24(flashes_df: pd.DataFrame, *, lat0: float, lon0: float, ra
         counts = sub.groupby("hour").size()
         for j, h in enumerate(hours):
             table[ring, j] = int(counts.get(h, 0))
+    return table
+
+
+def compute_table_4x5min(flashes_df: pd.DataFrame, *, lat0: float, lon0: float, radii_km: list[float], date_local: datetime) -> np.ndarray:
+    """Compute a 4 x 288 table of flash counts using 5-minute bins anchored to local date midnight.
+
+    - `date_local` is any datetime with the desired local date and tzinfo; the function will use
+      that date's 00:00..23:55 local time range.
+    - Future bins (>= now_local if date_local is today) will remain zero.
+    """
+    # Prepare empty result
+    table = np.zeros((4, 288), dtype=np.int64)
+    if flashes_df.empty:
+        return table
+
+    # Determine local midnight and day end
+    local_midnight = date_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_day_end = local_midnight + timedelta(days=1)
+
+    # Convert flash times to the local tz of date_local
+    tz = date_local.tzinfo
+    tloc = flashes_df["time"].dt.tz_convert(tz)
+    # Keep only those within the day [midnight, day_end)
+    mask = (tloc >= local_midnight) & (tloc < local_day_end)
+    df = flashes_df[mask].copy()
+    if df.empty:
+        return table
+
+    # Compute distances and ring indices
+    dist = haversine_km(lat0, lon0, df["lat"].to_numpy(), df["lon"].to_numpy())
+    r_idx = ring_index(dist, radii_km)
+    within = r_idx < len(radii_km)
+    df = df[within].copy()
+    if df.empty:
+        return table
+    df["ring"] = r_idx[within]
+
+    # Compute 5-minute bin index: minutes since midnight // 5 -> 0..287
+    minutes = (df["time"].dt.tz_convert(tz).dt.hour * 60) + df["time"].dt.tz_convert(tz).dt.minute
+    bin_idx = (minutes // 5).astype(int)
+    df["bin"] = bin_idx
+
+    # Filter valid bins 0..287
+    df = df[(df["bin"] >= 0) & (df["bin"] < 288)]
+    if df.empty:
+        return table
+
+    # Group by ring and bin and count
+    grp = df.groupby(["ring", "bin"]).size()
+    for (ring, b), cnt in grp.items():
+        if 0 <= ring < 4 and 0 <= b < 288:
+            table[int(ring), int(b)] = int(cnt)
+
     return table
 
 

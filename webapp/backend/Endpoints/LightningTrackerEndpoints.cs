@@ -52,11 +52,59 @@ public static class LightningTrackerEndpoints
                 safeRequest.EndLocal,
                 safeRequest.InitialLoadHours,
                 safeRequest.Background,
+                false,
                 ct
             );
 
             foreach (var header in metadata.Headers)
                 response.Headers[header.Key] = header.Value;
+
+            return Results.File(png, "image/png");
+        });
+
+        app.MapGet("/api/render/frame", async (
+            int takerId,
+            int mode,
+            string? startLocal,
+            string? endLocal,
+            int initialLoadHours,
+            int background,
+            int thumb,
+            ServiceTakerRepository repo,
+            RenderFrameCacheService frameCache,
+            HttpResponse response,
+            CancellationToken ct
+        ) =>
+        {
+            var taker = await repo.GetByIdAsync(takerId, ct);
+            if (taker is null)
+                return Results.NotFound(new { message = "Tomador não encontrado" });
+
+            var safeRequest = RenderQuery.Normalize(
+                takerId,
+                mode,
+                startLocal,
+                endLocal,
+                initialLoadHours,
+                background
+            );
+
+            var (png, metadata) = await frameCache.RenderCachedAsync(
+                taker,
+                safeRequest.Mode,
+                safeRequest.StartLocal,
+                safeRequest.EndLocal,
+                safeRequest.InitialLoadHours,
+                safeRequest.Background,
+                thumb != 0,
+                ct
+            );
+
+            foreach (var header in metadata.Headers)
+                response.Headers[header.Key] = header.Value;
+
+            response.Headers["X-Render-Cache"] = "hit-or-created";
+            response.Headers["X-Render-Frame-Thumb"] = thumb != 0 ? "1" : "0";
 
             return Results.File(png, "image/png");
         });

@@ -58,7 +58,7 @@ function buildTableCsv(tableData) {
   const values = Array.isArray(tableData?.values4x24) ? tableData.values4x24 : []
 
   const lines = []
-  lines.push(['Anel \ Hora', ...hourLabels].map((cell) => `"${csvCell(cell)}"`).join(';'))
+  lines.push(['Anel \ Tempo', ...hourLabels].map((cell) => `"${csvCell(cell)}"`).join(';'))
 
   radiiLabels.forEach((label, rowIndex) => {
     const row = Array.isArray(values[rowIndex]) ? values[rowIndex] : []
@@ -86,6 +86,11 @@ function App() {
   const [plotUrl, setPlotUrl] = useState('')
   const plotUrlRef = useRef('')
   const [statusText, setStatusText] = useState('')
+  const [animating, setAnimating] = useState(false)
+  const [frames, setFrames] = useState([]) // array of {ts, url}
+  const [frameIndex, setFrameIndex] = useState(0)
+  const [isPrefetching, setIsPrefetching] = useState(false)
+  const [animHours, setAnimHours] = useState(1) // 1..3
   const [lastUpdateLocal, setLastUpdateLocal] = useState('')
   const [isRendering, setIsRendering] = useState(false)
   const [renderError, setRenderError] = useState('')
@@ -219,7 +224,7 @@ function App() {
     if (!selectedTaker) return
     setIsGeneratingTable(true)
     setTableError('')
-    setTableStatus('Gerando tabela 4x24...')
+    setTableStatus('Gerando tabela 4x288...')
     try {
       const qs = buildQuery({
         takerId: selectedTaker.id,
@@ -253,6 +258,18 @@ function App() {
     }
     plotUrlRef.current = nextUrl
     setPlotUrl(nextUrl)
+  }
+
+  function triggerBrowserDownload(blob, filename) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.style.display = 'none'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
   }
 
   async function refreshPlot() {
@@ -305,8 +322,121 @@ function App() {
     }
   }
 
-  function downloadCurrentImage() {
-    if (!plotUrl) return
+  function _formatLocalIso(dt) {
+    // YYYY-MM-DDTHH:MM:SS
+    const y = dt.getFullYear()
+    const m = String(dt.getMonth() + 1).padStart(2, '0')
+    const d = String(dt.getDate()).padStart(2, '0')
+    const hh = String(dt.getHours()).padStart(2, '0')
+    const mm = String(dt.getMinutes()).padStart(2, '0')
+    const ss = String(dt.getSeconds()).padStart(2, '0')
+    return `${y}-${m}-${d}T${hh}:${mm}:${ss}`
+  }
+
+  function _buildFrameTimestamps(endLocalStr, hours) {
+    // endLocalStr expected as 'YYYY-MM-DDTHH:MM:SS' or empty (use now)
+    const end = endLocalStr ? new Date(endLocalStr) : new Date()
+    const step = 5 // minutes
+    const total = Math.min(3, Math.max(1, Number(hours) || 1)) * 60 // minutes
+    const count = Math.floor(total / step) + 1
+    const stamps = []
+    const startMs = end.getTime() - (count - 1) * step * 60 * 1000
+    for (let i = 0; i < count; i++) {
+      const dt = new Date(startMs + i * step * 60 * 1000)
+      stamps.push(_formatLocalIso(dt))
+    }
+    return stamps
+  }
+
+  async function fetchFrameForTs(ts, { full = false, hours = animHours } = {}) {
+    if (!selectedTaker) return null
+    try {
+      const end = new Date(ts)
+      const start = new Date(end.getTime() - Math.min(3, Math.max(1, Number(hours) || 1)) * 60 * 60 * 1000)
+      const qs = buildQuery({
+        takerId: selectedTaker.id,
+        mode,
+        startLocal: _formatLocalIso(start),
+        endLocal: ts,
+        background: backgroundIr ? 1 : 0,
+        initialLoadHours,
+        thumb: full ? 0 : 1,
+        _ts: Date.now(),
+      })
+      const res = await fetch(`/api/render/frame?${qs}`)
+      if (!res.ok) throw new Error(`Falha ao renderizar frame (${res.status})`)
+      const blob = await res.blob()
+      return blob
+    } catch (e) {
+      console.error('fetchFrameForTs error', e)
+      return null
+    }
+  }
+
+  async function prefetchFrames(endLocalStr, hours) {
+    setIsPrefetching(true)
+    try {
+      const stamps = _buildFrameTimestamps(endLocalStr, hours)
+      const nextFrames = []
+      for (let i = 0; i < stamps.length; i++) {
+        const ts = stamps[i]
+        // If already cached, reuse
+        const existing = frames.find((f) => f.ts === ts)
+        if (existing) {
+          nextFrames.push(existing)
+          continue
+        }
+        const blob = await fetchFrameForTs(ts, { full: false, hours })
+        if (!blob) {
+          nextFrames.push({ ts, url: null })
+          continue
+        }
+        const url = URL.createObjectURL(blob)
+        nextFrames.push({ ts, url })
+      }
+      // revoke old frames
+      frames.forEach((f) => {
+        if (f && f.url) try { URL.revokeObjectURL(f.url) } catch {} 
+      })
+      setFrames(nextFrames)
+      setFrameIndex(0)
+    } finally {
+      setIsPrefetching(false)
+    }
+  }
+
+  function startAnimation() {
+    if (!selectedTaker) return
+    // build stamps based on current endLocal or now
+    const endStr = normalizeDateTimeLocal(endLocal) || ''
+    prefetchFrames(endStr || '', animHours)
+    setAnimating(true)
+  }
+
+  function stopAnimation() {
+    setAnimating(false)
+    refreshPlot()
+  }
+
+  async function saveCurrentFrame() {
+    const cur = frames[frameIndex]
+    const ts = cur?.ts || normalizeDateTimeLocal(endLocal)
+    if (!ts) return
+    try {
+      const blob = await fetchFrameForTs(ts, { full: true, hours: animHours })
+      if (!blob) return
+      const name = selectedTaker?.name ? String(selectedTaker.name) : 'taker'
+      const safe = name.trim().replace(/[^A-Za-z0-9]+/g, '_').slice(0, 64)
+      const tsSafe = ts.replace(/[:.]/g, '-')
+      const filename = `${safe || 'taker'}_frame_${tsSafe}.png`
+      triggerBrowserDownload(blob, filename)
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  async function downloadCurrentImage() {
+    if (!selectedTaker) return
     const name = selectedTaker?.name ? String(selectedTaker.name) : 'taker'
     const safe = name
       .trim()
@@ -316,10 +446,28 @@ function App() {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
     const filename = `${safe || 'taker'}_mode${mode}_${ts}.png`
 
-    const a = document.createElement('a')
-    a.href = plotUrl
-    a.download = filename
-    a.click()
+    try {
+      let blob = null
+      if (animating && frames.length > 0 && frames[frameIndex]?.ts) {
+        blob = await fetchFrameForTs(frames[frameIndex].ts, { full: true, hours: animHours })
+      } else {
+        const qs = buildQuery({
+          takerId: selectedTaker.id,
+          mode,
+          startLocal: normalizeDateTimeLocal(startLocal),
+          endLocal: normalizeDateTimeLocal(endLocal),
+          initialLoadHours,
+          background: backgroundIr ? 1 : 0,
+          _ts: Date.now(),
+        })
+        const res = await fetch(`/api/render?${qs}`)
+        if (!res.ok) throw new Error(`Falha ao renderizar para download (${res.status})`)
+        blob = await res.blob()
+      }
+      if (blob) triggerBrowserDownload(blob, filename)
+    } catch (e) {
+      console.error(e)
+    }
   }
 
   function downloadCurrentTableCsv() {
@@ -327,7 +475,6 @@ function App() {
 
     const csv = buildTableCsv(tableData)
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
 
     const name = selectedTaker?.name ? String(selectedTaker.name) : 'taker'
     const safe = name
@@ -338,12 +485,7 @@ function App() {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
     const filename = `${safe || 'taker'}_table_${ts}.csv`
 
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    triggerBrowserDownload(blob, filename)
   }
 
   useEffect(() => {
@@ -383,6 +525,27 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [takerId, mode, startLocal, endLocal, initialLoadHours, backgroundIr])
 
+  // Animation playback loop
+  useEffect(() => {
+    if (!animating) return
+    if (!frames || frames.length === 0) return
+    const fps = 6
+    const interval = 1000 / fps
+    let idx = frameIndex
+    const id = setInterval(() => {
+      idx = (idx + 1) % frames.length
+      setFrameIndex(idx)
+      const f = frames[idx]
+      if (f && f.url) {
+        if (plotUrlRef.current) try { URL.revokeObjectURL(plotUrlRef.current) } catch {}
+        plotUrlRef.current = f.url
+        setPlotUrl(f.url)
+      }
+    }, interval)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animating, frames])
+
   useEffect(() => {
     if (!selectedTaker) return
     setTableData(null)
@@ -419,6 +582,20 @@ function App() {
               Última atualização:{' '}
               <strong>{lastUpdateLocal ? `${lastUpdateLocal} horas local` : '—'}</strong>
             </div>
+            <div className="plotHeaderControls">
+              <button className="animBtn" type="button" onClick={() => (animating ? stopAnimation() : startAnimation())}>
+                {animating ? 'Pausar animação' : 'Reproduzir animação'}
+              </button>
+              <label className="animLabel">Duração (h):
+                <select value={animHours} onChange={(e) => setAnimHours(Number(e.target.value))}>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                </select>
+              </label>
+              <button className="animBtn" type="button" onClick={saveCurrentFrame} disabled={!frames.length}>Salvar frame</button>
+              <div className="animStatus">{isPrefetching ? 'Preparando frames...' : frames.length ? `${frameIndex + 1}/${frames.length} • ${frames[frameIndex]?.ts || ''}` : ''}</div>
+            </div>
           </div>
 
           <div className="plotFrame">
@@ -438,7 +615,6 @@ function App() {
               </div>
             )}
             {isRendering && plotUrl ? <div className="plotOverlay">Atualizando imagem...</div> : null}
-            <img className="watermark" src="/logo.png" alt="BLUEOCEAN" />
           </div>
 
           <div className="plotSummary" aria-label="Resumo do render">
@@ -583,10 +759,10 @@ function App() {
 
             {savedTablesError ? <div className="status">{savedTablesError}</div> : null}
 
-            <div className="tablePanel" aria-label="Tabela 4x24">
+            <div className="tablePanel" aria-label="Tabela 4x288">
               <div className="tablePanelHeader">
                 <div>
-                  <strong>Tabela 4x24</strong>
+                  <strong>Tabela 4x288 (5 min)</strong>
                   <span>
                     {tableData?.fileName
                       ? `${tableData.fileName}`

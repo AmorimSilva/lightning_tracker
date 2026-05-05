@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSingleton<ServiceTakerRepository>();
 builder.Services.AddSingleton<PythonRenderService>();
+builder.Services.AddSingleton<RenderFrameCacheService>();
 builder.Services.AddSingleton<PythonActivityService>();
 builder.Services.AddSingleton<PythonTableService>();
 builder.Services.AddSingleton<TableCatalogService>();

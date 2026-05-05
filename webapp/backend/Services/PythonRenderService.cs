@@ -30,6 +30,7 @@ public sealed class PythonRenderService
         string? endLocal,
         int initialLoadHours,
         int background,
+        bool thumb,
         CancellationToken cancellationToken
     )
     {
@@ -51,6 +52,8 @@ public sealed class PythonRenderService
             initialLoadHours.ToString(),
             "--background",
             background.ToString(),
+            "--thumb",
+            thumb ? "1" : "0",
         };
 
         if (!string.IsNullOrWhiteSpace(startLocal))

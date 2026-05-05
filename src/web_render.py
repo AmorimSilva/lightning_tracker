@@ -19,6 +19,7 @@ import matplotlib
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.colors import Colormap
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
 
@@ -41,6 +42,7 @@ class RenderParams:
     dynamic_end: bool
     initial_load_hours: int
     background: bool
+    thumb: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ class RenderMetadata:
     dynamic_end: bool
     initial_load_hours: int
     background: bool
+    image_time_local: str | None = None
+    next_update_local: str | None = None
 
 
 def _header_value(value: object, *, max_len: int = 320) -> str:
@@ -102,11 +106,10 @@ def _to_utc(dt_local: datetime) -> datetime:
 def _set_extent(ax, *, lat0: float, lon0: float, max_radius_km: float) -> tuple[float, float, float, float]:
     dlat = max_radius_km / 111.0
     dlon = max_radius_km / (111.0 * max(0.2, np.cos(np.radians(lat0))))
-    pad = 0.15
-    lon_min = lon0 - dlon * (1 + pad)
-    lon_max = lon0 + dlon * (1 + pad)
-    lat_min = lat0 - dlat * (1 + pad)
-    lat_max = lat0 + dlat * (1 + pad)
+    lon_min = lon0 - dlon
+    lon_max = lon0 + dlon
+    lat_min = lat0 - dlat
+    lat_max = lat0 + dlat
     ax.set_xlim(lon_min, lon_max)
     ax.set_ylim(lat_min, lat_max)
     ax.set_aspect("equal", adjustable="box")
@@ -172,17 +175,54 @@ def _plot_rings(ax, *, lat0: float, lon0: float, radii_km: list[float], label: s
     title = (label or "").strip() or "Tomador de Serviço"
     title = textwrap.fill(title, width=28)
 
-    leg = ax.legend(handles, labels, loc="upper left", frameon=True, fontsize=10)
+    return handles, labels, title
+
+
+def _load_logo_image() -> np.ndarray | None:
+    logo_path = Path(__file__).resolve().parents[1] / "logo.png"
+    if not logo_path.exists():
+        return None
     try:
-        leg.set_title(title)
+        return plt.imread(str(logo_path))
     except Exception:
-        pass
+        return None
+
+
+def _add_logo(fig, *, thumb: bool) -> None:
+    logo = _load_logo_image()
+    if logo is None:
+        return
+
+    # Place the logo in a small inset axes in figure coordinates so it cannot
+    # overflow or cover the central plot. Use a conservative fraction size.
+    frac = 0.06 if thumb else 0.10
+    left = 0.015
+    bottom = 0.015
+    # Width/height fractions; keep aspect ratio by using same fraction for both
+    width = frac
+    height = frac * (logo.shape[0] / logo.shape[1]) if logo.shape[1] != 0 else frac
+
     try:
-        frame = leg.get_frame()
-        frame.set_alpha(0.75)
+        ax_logo = fig.add_axes([left, bottom, width, height], anchor='SW', zorder=25)
+        ax_logo.imshow(logo)
+        ax_logo.axis('off')
     except Exception:
-        pass
-    return leg
+        # Fallback: use AnnotationBbox with a very small zoom
+        try:
+            zoom = 0.04 if thumb else 0.07
+            image = OffsetImage(logo, zoom=zoom)
+            artist = AnnotationBbox(
+                image,
+                (0.02, 0.02),
+                xycoords="figure fraction",
+                box_alignment=(0.0, 0.0),
+                frameon=False,
+                pad=0.0,
+                zorder=20,
+            )
+            fig.add_artist(artist)
+        except Exception:
+            return
 
 
 def _draw_polygon(ax, *, lon: np.ndarray, lat: np.ndarray) -> None:
@@ -215,7 +255,8 @@ def _plot_density(ax, df: pd.DataFrame) -> None:
     except Exception:
         pass
 
-    ax.imshow(H, extent=[xmin, xmax, ymin, ymax], origin="lower", cmap="hot", alpha=0.75, aspect="auto")
+    img = ax.imshow(H, extent=[xmin, xmax, ymin, ymax], origin="lower", cmap="hot", alpha=0.75, aspect="auto")
+    return img
 
 
 def render_png(
@@ -377,11 +418,15 @@ def render_png(
         bg_headers["X-Background-Reason"] = "not_requested"
 
     # Render figure.
-    fig, ax = plt.subplots(figsize=(8.4, 7.2), dpi=settings.plot_dpi)
+    figsize = (6.6, 5.6) if params.thumb else (8.4, 7.2)
+    dpi = 96 if params.thumb else settings.plot_dpi
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    # Keep most of the figure for the axes so ABI fills to the edges;
+    # reserve only a small margin for figure-level legends and metadata.
+    fig.subplots_adjust(left=0.035, right=0.985, top=0.975, bottom=0.055)
     lon_min, lon_max, lat_min, lat_max = _set_extent(ax, lat0=params.lat0, lon0=params.lon0, max_radius_km=max_r)
-
     if bg is not None:
-        ax.imshow(
+        bg_img = ax.imshow(
             bg.data,
             extent=bg.extent,
             origin=bg.origin,
@@ -392,10 +437,34 @@ def render_png(
             zorder=0,
             aspect="auto",
         )
+        # NOTE: do not clip the background to the 200 km ring — keep full ABI overlay so
+        # flashes and IR remain visible. Previous iteration clipped the background which
+        # hid content; reverting to unmasked background.
 
-    rings_leg = _plot_rings(ax, lat0=params.lat0, lon0=params.lon0, radii_km=settings.radii_km, label=params.taker_name)
-    if rings_leg is not None:
-        ax.add_artist(rings_leg)
+    ring_handles, ring_labels, ring_title = _plot_rings(
+        ax,
+        lat0=params.lat0,
+        lon0=params.lon0,
+        radii_km=settings.radii_km,
+        label=params.taker_name,
+    )
+    if ring_handles:
+        rings_leg = fig.legend(
+            ring_handles,
+            ring_labels,
+            loc="upper left",
+            bbox_to_anchor=(0.04, 0.965),
+            bbox_transform=fig.transFigure,
+            frameon=False,
+            fontsize=9 if params.thumb else 10,
+            title=ring_title,
+        )
+        try:
+            legend_box = getattr(rings_leg, "_legend_box", None)
+            if legend_box is not None:
+                legend_box.align = "left"
+        except Exception:
+            pass
 
     # Polygon from events when available.
     poly_df = events_df if not events_df.empty else flashes_df
@@ -406,7 +475,8 @@ def render_png(
         if not flashes_df.empty:
             t_local = flashes_df["time"].dt.tz_convert(plot_start.tzinfo)
             duration_minutes = max(1.0, (plot_end - plot_start).total_seconds() / 60.0)
-            bin_minutes = _choose_time_bin_minutes(duration_minutes, max_bins=6)
+            # Use fixed 5-minute bins so each 5-min interval gets its own marker/color.
+            bin_minutes = 5
             n_bins = max(1, int(np.ceil(duration_minutes / float(bin_minutes))))
 
             x = flashes_df["lon"].to_numpy()
@@ -443,27 +513,59 @@ def render_png(
                 time_labels.append(f"{bin_start:%H:%M}–{bin_end:%H:%M}")
 
             if time_handles:
-                time_leg = ax.legend(time_handles, time_labels, loc="lower left", frameon=True, fontsize=9, title="Tempo (local)")
+                time_leg = fig.legend(
+                    time_handles,
+                    time_labels,
+                    loc="upper right",
+                    bbox_to_anchor=(0.985, 0.965),
+                    bbox_transform=fig.transFigure,
+                    frameon=False,
+                    fontsize=7 if params.thumb else 8,
+                    title="Tempo (local)",
+                )
                 try:
-                    frame = time_leg.get_frame()
-                    frame.set_alpha(0.75)
+                    legend_box = getattr(time_leg, "_legend_box", None)
+                    if legend_box is not None:
+                        legend_box.align = "left"
                 except Exception:
                     pass
     elif params.mode == 2:
-        _plot_density(ax, flashes_df)
+        density_img = _plot_density(ax, flashes_df)
     elif params.mode == 3:
         if not events_df.empty:
             ax.scatter(events_df["lon"].to_numpy(), events_df["lat"].to_numpy(), s=22, c="#7f7f7f", edgecolors="none")
     elif params.mode == 4:
-        _plot_density(ax, events_df)
+        density_img = _plot_density(ax, events_df)
+
+    _add_logo(fig, thumb=params.thumb)
 
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
-        spine.set_linewidth(1.5)
-        spine.set_color("#111")
+        spine.set_visible(False)
+    ax.set_frame_on(False)
+    ax.set_facecolor("white")
 
-    fig.tight_layout()
+    # Overlay small metadata text: image time and next update (local)
+    try:
+        now_local = datetime.now().astimezone(plot_start.tzinfo)
+        # Ceil to next 5-minute boundary
+        minute = now_local.minute
+        next_minute = ((minute // 5) + 1) * 5
+        next_dt = now_local.replace(second=0, microsecond=0)
+        if next_minute >= 60:
+            next_dt = next_dt.replace(hour=(now_local.hour + 1) % 24, minute=0) + timedelta(days=1) if now_local.hour == 23 and next_minute >= 60 else next_dt.replace(minute=0, hour=(now_local.hour + 1) % 24)
+        else:
+            next_dt = next_dt.replace(minute=next_minute)
+
+        image_time_local = end_utc.astimezone(plot_start.tzinfo).strftime("%Y-%m-%d %H:%M:%S")
+        next_update_local = next_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        txt = f"Imagem: {image_time_local}  |  Próx. atualização: {next_update_local}"
+        ax.text(0.99, 0.01, txt, ha="right", va="bottom", transform=ax.transAxes, fontsize=9, color="#111", bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"))
+    except Exception:
+        image_time_local = None
+        next_update_local = None
 
     buf = BytesIO()
     fig.savefig(buf, format="png")
@@ -482,6 +584,8 @@ def render_png(
         dynamic_end=bool(params.dynamic_end),
         initial_load_hours=int(params.initial_load_hours),
         background=bool(params.background),
+        image_time_local=image_time_local,
+        next_update_local=next_update_local,
     )
     return png, metadata, bg_headers
 
@@ -502,6 +606,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--initial-load-hours", type=int, default=0, help="Initial load hours optimization")
     p.add_argument("--background", type=int, default=0, help="1 to enable background overlay (if configured)")
+    p.add_argument("--thumb", type=int, default=0, choices=[0, 1], help="1 to render a smaller thumbnail frame")
 
     return p
 
@@ -532,6 +637,7 @@ def main() -> int:
         dynamic_end=dynamic_end,
         initial_load_hours=int(args.initial_load_hours),
         background=bool(int(args.background)),
+        thumb=bool(int(args.thumb)),
     )
 
     settings_path = Path(str(args.settings))
@@ -541,6 +647,10 @@ def main() -> int:
     sys.stderr.write(f"X-Last-Update-Local: {metadata.last_update_local}\n")
     sys.stderr.write(f"X-Plot-Start-Local: {metadata.plot_start_local}\n")
     sys.stderr.write(f"X-Plot-End-Local: {metadata.plot_end_local}\n")
+    if metadata.image_time_local:
+        sys.stderr.write(f"X-Image-Time-Local: {metadata.image_time_local}\n")
+    if metadata.next_update_local:
+        sys.stderr.write(f"X-Next-Update-Local: {metadata.next_update_local}\n")
     sys.stderr.write(f"X-Flashes-Count: {metadata.flashes_count}\n")
     sys.stderr.write(f"X-Events-Count: {metadata.events_count}\n")
     sys.stderr.write(f"X-Mode: {metadata.mode}\n")
