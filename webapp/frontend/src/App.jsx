@@ -529,7 +529,7 @@ function App() {
   useEffect(() => {
     if (!animating) return
     if (!frames || frames.length === 0) return
-    const fps = 6
+    const fps = 3
     const interval = 1000 / fps
     let idx = frameIndex
     const id = setInterval(() => {

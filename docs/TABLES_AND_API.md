@@ -67,5 +67,5 @@ Notes and compatibility
 
 Next steps (rendering + animation)
 
-- The plot will be updated to expose the image time being viewed and a computed "next update" timestamp (every 5 minutes). It will also support rendering short animations (up to 3 hours) at 6 FPS. Implementation details and API headers are described in the renderer docs (TODO: link).
+- The plot exposes the image time being viewed and a computed "next update" timestamp (every 5 minutes). It supports short animations (up to 3 hours) at 3 FPS. Implementation details and API headers are described in the project README and renderer code.
 

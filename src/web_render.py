@@ -475,8 +475,8 @@ def render_png(
         if not flashes_df.empty:
             t_local = flashes_df["time"].dt.tz_convert(plot_start.tzinfo)
             duration_minutes = max(1.0, (plot_end - plot_start).total_seconds() / 60.0)
-            # Use fixed 5-minute bins so each 5-min interval gets its own marker/color.
-            bin_minutes = 5
+            # Use 30-minute bins to keep the time legend readable without overcrowding.
+            bin_minutes = 30
             n_bins = max(1, int(np.ceil(duration_minutes / float(bin_minutes))))
 
             x = flashes_df["lon"].to_numpy()
