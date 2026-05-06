@@ -10,12 +10,14 @@ public sealed class PythonTableService
     private readonly string _workingDirectory;
     private readonly string _settingsPath;
     private readonly string _contentRoot;
+    private readonly string? _postgresDsn;
 
     public PythonTableService(IConfiguration config, IHostEnvironment env)
     {
         _pythonCommand = config["Python:Command"] ?? "python";
         _workingDirectory = config["Python:WorkingDirectory"] ?? "..\\..";
         _settingsPath = config["Python:SettingsPath"] ?? "config\\settings.yaml";
+        _postgresDsn = config["Data:PostgresDsn"] ?? Environment.GetEnvironmentVariable("LIGHTNING_TRACKER_PG_DSN");
         _contentRoot = env.ContentRootPath;
     }
 
@@ -31,6 +33,8 @@ public sealed class PythonTableService
             "src.web_tables",
             "--settings",
             _settingsPath,
+            "--taker-id",
+            taker.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "--name",
             taker.Name,
             "--lat",
@@ -57,6 +61,11 @@ public sealed class PythonTableService
 
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
+
+        if (!string.IsNullOrWhiteSpace(_postgresDsn))
+            psi.Environment["LIGHTNING_TRACKER_PG_DSN"] = _postgresDsn;
+
+        psi.Environment["LIGHTNING_TRACKER_TAKER_ID"] = taker.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
         using var proc = new Process { StartInfo = psi };
         if (!proc.Start())

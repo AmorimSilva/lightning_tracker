@@ -20,18 +20,20 @@ public static class LightningTrackerEndpoints
         });
 
         app.MapGet("/api/render", async (
-            int takerId,
-            int mode,
-            string? startLocal,
-            string? endLocal,
-            int initialLoadHours,
-            int background,
+            HttpRequest request,
             ServiceTakerRepository repo,
             PythonRenderService renderer,
             HttpResponse response,
             CancellationToken ct
         ) =>
         {
+            var takerId = GetIntQuery(request, "takerId");
+            var mode = GetIntQuery(request, "mode");
+            var startLocal = GetStringQuery(request, "startLocal");
+            var endLocal = GetStringQuery(request, "endLocal");
+            var safeInitialLoadHours = GetIntQuery(request, "initialLoadHours", 0);
+            var safeBackground = GetIntQuery(request, "background", 0);
+
             var taker = await repo.GetByIdAsync(takerId, ct);
             if (taker is null)
                 return Results.NotFound(new { message = "Tomador não encontrado" });
@@ -41,11 +43,11 @@ public static class LightningTrackerEndpoints
                 mode,
                 startLocal,
                 endLocal,
-                initialLoadHours,
-                background
+                safeInitialLoadHours,
+                safeBackground
             );
 
-            var (png, metadata) = await renderer.RenderAsync(
+            var renderResult = await renderer.RenderAsync(
                 taker,
                 safeRequest.Mode,
                 safeRequest.StartLocal,
@@ -56,6 +58,9 @@ public static class LightningTrackerEndpoints
                 ct
             );
 
+            var png = renderResult.Png;
+            var metadata = renderResult.Metadata;
+
             foreach (var header in metadata.Headers)
                 response.Headers[header.Key] = header.Value;
 
@@ -63,19 +68,21 @@ public static class LightningTrackerEndpoints
         });
 
         app.MapGet("/api/render/frame", async (
-            int takerId,
-            int mode,
-            string? startLocal,
-            string? endLocal,
-            int initialLoadHours,
-            int background,
-            int thumb,
+            HttpRequest request,
             ServiceTakerRepository repo,
             RenderFrameCacheService frameCache,
             HttpResponse response,
             CancellationToken ct
         ) =>
         {
+            var takerId = GetIntQuery(request, "takerId");
+            var mode = GetIntQuery(request, "mode");
+            var startLocal = GetStringQuery(request, "startLocal");
+            var endLocal = GetStringQuery(request, "endLocal");
+            var safeInitialLoadHours = GetIntQuery(request, "initialLoadHours", 0);
+            var safeBackground = GetIntQuery(request, "background", 0);
+            var safeThumb = GetIntQuery(request, "thumb", 0);
+
             var taker = await repo.GetByIdAsync(takerId, ct);
             if (taker is null)
                 return Results.NotFound(new { message = "Tomador não encontrado" });
@@ -85,26 +92,29 @@ public static class LightningTrackerEndpoints
                 mode,
                 startLocal,
                 endLocal,
-                initialLoadHours,
-                background
+                safeInitialLoadHours,
+                safeBackground
             );
 
-            var (png, metadata) = await frameCache.RenderCachedAsync(
+            var renderResult = await frameCache.RenderCachedAsync(
                 taker,
                 safeRequest.Mode,
                 safeRequest.StartLocal,
                 safeRequest.EndLocal,
                 safeRequest.InitialLoadHours,
                 safeRequest.Background,
-                thumb != 0,
+                safeThumb != 0,
                 ct
             );
+
+            var png = renderResult.Png;
+            var metadata = renderResult.Metadata;
 
             foreach (var header in metadata.Headers)
                 response.Headers[header.Key] = header.Value;
 
             response.Headers["X-Render-Cache"] = "hit-or-created";
-            response.Headers["X-Render-Frame-Thumb"] = thumb != 0 ? "1" : "0";
+            response.Headers["X-Render-Frame-Thumb"] = safeThumb != 0 ? "1" : "0";
 
             return Results.File(png, "image/png");
         });
@@ -137,7 +147,7 @@ public static class LightningTrackerEndpoints
             if (taker is null)
                 return Results.NotFound(new { message = "Tomador não encontrado" });
 
-            var result = await catalog.GetLatestAsync(taker.Name, limit <= 0 ? 8 : limit, ct);
+            var result = await catalog.GetLatestAsync(taker.Id, taker.Name, limit <= 0 ? 8 : limit, ct);
             return Results.Json(result);
         });
 
@@ -154,5 +164,22 @@ public static class LightningTrackerEndpoints
         });
 
         return app;
+    }
+
+    private static int GetIntQuery(HttpRequest request, string key, int defaultValue = 0)
+    {
+        if (!request.Query.TryGetValue(key, out var value))
+            return defaultValue;
+
+        return int.TryParse(value.ToString(), out var parsed) ? parsed : defaultValue;
+    }
+
+    private static string? GetStringQuery(HttpRequest request, string key)
+    {
+        if (!request.Query.TryGetValue(key, out var value))
+            return null;
+
+        var text = value.ToString().Trim();
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 }

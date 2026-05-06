@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LightningTracker.WebApi")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0866bda5398c6f76718e3bcf27e2584956584d0a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+338516d7d773df1cf72aec69ccd1a7b4127aacaa")]
 [assembly: System.Reflection.AssemblyProductAttribute("LightningTracker.WebApi")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LightningTracker.WebApi")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

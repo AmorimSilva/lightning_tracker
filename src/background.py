@@ -84,7 +84,15 @@ class AbiIrBackgroundProvider:
         self.vmax_k = float(vmax_k)
         self.max_dim = int(max_dim)
 
-        self.s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+        self.s3 = boto3.client(
+            "s3",
+            config=Config(
+                signature_version=UNSIGNED,
+                connect_timeout=5,
+                read_timeout=10,
+                retries={"max_attempts": 2, "mode": "standard"},
+            ),
+        )
 
         # Cache per hour prefix -> sorted list of (start_dt_utc, key)
         self._hour_index: dict[str, list[tuple[datetime, str]]] = {}

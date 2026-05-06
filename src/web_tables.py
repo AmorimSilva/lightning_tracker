@@ -15,6 +15,7 @@ import pandas as pd
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 from .archiver import HourlyArchiver
+from .data_store import get_postgres_dsn, load_points_from_postgres, store_daily_table_in_postgres
 from .config import load_settings
 from .core import _radii_labels, _slug, compute_table_4x5min, _5min_time_labels_for_date
 from .downloader import GLMDownloader
@@ -68,6 +69,15 @@ def _to_utc(dt_local: datetime) -> datetime:
 
 
 def _download_flashes(settings, start_utc: datetime, end_utc: datetime) -> pd.DataFrame:
+    dsn = get_postgres_dsn()
+    if dsn:
+        try:
+            db_df = load_points_from_postgres(dsn=dsn, kind="flash", start_utc=start_utc, end_utc=end_utc)
+            if not db_df.empty:
+                return db_df
+        except Exception:
+            pass
+
     downloader = GLMDownloader(bucket=settings.aws_bucket, product_prefix=settings.aws_product_prefix, goes_number=19)
     result = downloader.download_range(start_utc, end_utc, interval_seconds=settings.aws_interval_seconds, dest_root=settings.raw_dir)
 
@@ -85,7 +95,7 @@ def _download_flashes(settings, start_utc: datetime, end_utc: datetime) -> pd.Da
     return pd.concat(flashes, ignore_index=True)
 
 
-def build_table_result(*, settings_path: Path, taker_name: str, lat0: float, lon0: float, end_local: datetime) -> TableGenerationResult:
+def build_table_result(*, settings_path: Path, taker_id: int, taker_name: str, lat0: float, lon0: float, end_local: datetime) -> TableGenerationResult:
     settings = load_settings(settings_path)
 
     lag = timedelta(seconds=int(settings.aws_availability_lag_sec))
@@ -121,6 +131,25 @@ def build_table_result(*, settings_path: Path, taker_name: str, lat0: float, lon
     except Exception:
         rel_path = csv_path.as_posix()
 
+    dsn = get_postgres_dsn()
+    if dsn:
+        try:
+            store_daily_table_in_postgres(
+                dsn=dsn,
+                taker_id=taker_id,
+                taker_name=taker_name,
+                date=end_local,
+                csv_text=csv_path.read_text(encoding="utf-8"),
+                metadata={
+                    "savedAtLocal": end_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    "endLocal": end_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    "hourLabels": hour_labels,
+                    "radiiLabels": radii_labels,
+                },
+            )
+        except Exception:
+            pass
+
     return TableGenerationResult(
         taker_name=taker_name,
         csv_path=str(csv_path),
@@ -136,6 +165,7 @@ def build_table_result(*, settings_path: Path, taker_name: str, lat0: float, lon
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Generate and save 4x24 lightning table CSV")
     p.add_argument("--settings", default=str(Path("config/settings.yaml")), help="Path to settings.yaml")
+    p.add_argument("--taker-id", required=False, default="0", help="Taker numeric id")
     p.add_argument("--name", required=True, help="Taker name")
     p.add_argument("--lat", required=True, type=float, help="Taker latitude")
     p.add_argument("--lon", required=True, type=float, help="Taker longitude")
@@ -152,6 +182,7 @@ def main() -> int:
 
     result = build_table_result(
         settings_path=Path(str(args.settings)),
+        taker_id=int(args.taker_id),
         taker_name=str(args.name),
         lat0=float(args.lat),
         lon0=float(args.lon),

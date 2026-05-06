@@ -9,6 +9,7 @@ public sealed class PythonRenderService
     private readonly string _workingDirectory;
     private readonly string _settingsPath;
     private readonly string _contentRoot;
+    private readonly string? _postgresDsn;
 
     public sealed record RenderMetadata(
         string? LastUpdateLocal,
@@ -20,6 +21,7 @@ public sealed class PythonRenderService
         _pythonCommand = config["Python:Command"] ?? "python";
         _workingDirectory = config["Python:WorkingDirectory"] ?? "..\\..";
         _settingsPath = config["Python:SettingsPath"] ?? "config\\settings.yaml";
+        _postgresDsn = config["Data:PostgresDsn"] ?? Environment.GetEnvironmentVariable("LIGHTNING_TRACKER_PG_DSN");
         _contentRoot = env.ContentRootPath;
     }
 
@@ -34,6 +36,8 @@ public sealed class PythonRenderService
         CancellationToken cancellationToken
     )
     {
+        const int renderTimeoutSeconds = 300;
+
         var args = new List<string>
         {
             "-m",
@@ -81,26 +85,42 @@ public sealed class PythonRenderService
         foreach (var a in args)
             psi.ArgumentList.Add(a);
 
+        if (!string.IsNullOrWhiteSpace(_postgresDsn))
+            psi.Environment["LIGHTNING_TRACKER_PG_DSN"] = _postgresDsn;
+
         using var proc = new Process { StartInfo = psi };
 
         if (!proc.Start())
             throw new InvalidOperationException("Falha ao iniciar o processo Python.");
 
         await using var ms = new MemoryStream();
+        var stdoutTask = proc.StandardOutput.BaseStream.CopyToAsync(ms, cancellationToken);
+        var stderrTask = proc.StandardError.ReadToEndAsync(cancellationToken);
+        var waitTask = proc.WaitForExitAsync(cancellationToken);
+        var timeoutTask = Task.Delay(TimeSpan.FromSeconds(renderTimeoutSeconds), cancellationToken);
 
-        var copyOut = proc.StandardOutput.BaseStream.CopyToAsync(ms, cancellationToken);
-        var readErr = proc.StandardError.ReadToEndAsync(cancellationToken);
-
-        await Task.WhenAll(copyOut, readErr);
-        await proc.WaitForExitAsync(cancellationToken);
-
-        if (proc.ExitCode != 0)
+        var completed = await Task.WhenAny(Task.WhenAll(stdoutTask, stderrTask, waitTask), timeoutTask);
+        if (completed == timeoutTask)
         {
-            var err = (await readErr) ?? "";
-            throw new InvalidOperationException($"Python retornou código {proc.ExitCode}. STDERR: {err}");
+            try
+            {
+                if (!proc.HasExited)
+                    proc.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // ignore process cleanup failures
+            }
+
+            throw new TimeoutException($"Python render excedeu {renderTimeoutSeconds} segundos.");
         }
 
-        var stderr = (await readErr) ?? "";
+        var stderr = await stderrTask ?? "";
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Python retornou código {proc.ExitCode}. STDERR: {stderr}");
+        }
+
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in stderr.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
         {

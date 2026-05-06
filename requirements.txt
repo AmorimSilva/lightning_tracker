@@ -12,3 +12,9 @@ pyproj>=3.6
 
 # Optional (density plots). The code runs without these if missing.
 scipy>=1.10
+
+# DB + ingestion PoC deps
+psycopg2-binary>=2.9
+pg8000>=1.31
+xarray>=2023.10
+zarr>=2.15

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,7 @@ from matplotlib.colors import Colormap
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
+import threading
 
 try:
     import geobr  # type: ignore
@@ -34,7 +36,8 @@ try:
 except Exception:
     gpd = None
 
-from .background import AbiIrBackgroundProvider
+from .background import AbiIrBackgroundProvider, BackgroundImage
+from .data_store import get_postgres_dsn, load_points_from_postgres
 from .config import load_settings
 from .downloader import GLMDownloader
 from .geo import circle_points, convex_hull_lonlat, haversine_km
@@ -294,26 +297,44 @@ def _load_logo_image() -> np.ndarray | None:
         return None
 
 
-def _add_logo(fig, *, thumb: bool) -> None:
+def _add_logo(fig, *, thumb: bool, ax=None) -> None:
     logo = _load_logo_image()
     if logo is None:
         return
 
-    # Place the logo in a small inset axes in figure coordinates so it cannot
-    # overflow or cover the central plot. Use a conservative fraction size.
-    frac = 0.06 if thumb else 0.10
-    left = 0.015
-    bottom = 0.015
-    # Width/height fractions; keep aspect ratio by using same fraction for both
-    width = frac
-    height = frac * (logo.shape[0] / logo.shape[1]) if logo.shape[1] != 0 else frac
-
+    # Try to place the logo inside the axes (so it becomes part of the image)
+    # using axes fraction coordinates. If that fails, fall back to figure-based
+    # inset so behavior is backwards-compatible.
     try:
-        ax_logo = fig.add_axes([left, bottom, width, height], anchor='SW', zorder=25)
-        ax_logo.imshow(logo)
-        ax_logo.axis('off')
+        if ax is not None:
+            zoom = 0.04 if thumb else 0.07
+            image = OffsetImage(logo, zoom=zoom)
+            artist = AnnotationBbox(
+                image,
+                (0.02, 0.02),
+                xycoords=ax.transAxes,
+                box_alignment=(0.0, 0.0),
+                frameon=False,
+                pad=0.0,
+                zorder=30,
+            )
+            ax.add_artist(artist)
+            return
     except Exception:
-        # Fallback: use AnnotationBbox with a very small zoom
+        pass
+
+    # Fallback: Place the logo in a small inset axes in figure coordinates so it cannot
+    # overflow or cover the central plot. Use a conservative fraction size.
+    try:
+        frac = 0.06 if thumb else 0.10
+        left = 0.015
+        bottom = 0.015
+        width = frac
+        height = frac * (logo.shape[0] / logo.shape[1]) if logo.shape[1] != 0 else frac
+        ax_logo = fig.add_axes([left, bottom, width, height], anchor="SW", zorder=25)
+        ax_logo.imshow(logo)
+        ax_logo.axis("off")
+    except Exception:
         try:
             zoom = 0.04 if thumb else 0.07
             image = OffsetImage(logo, zoom=zoom)
@@ -398,14 +419,19 @@ def render_png(
         midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         midnight_utc = midnight_local.astimezone(timezone.utc)
         fetch_start_utc = max(end_utc - timedelta(hours=init_hours), midnight_utc)
+    elif params.dynamic_start:
+        # Default dynamic renders should stay lightweight; use roughly one GLM interval instead of
+        # downloading several minutes of files when the user left Carga inicial at zero.
+        default_load_seconds = max(20, int(settings.aws_interval_seconds))
+        midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight_utc = midnight_local.astimezone(timezone.utc)
+        fetch_start_utc = max(end_utc - timedelta(seconds=default_load_seconds), midnight_utc)
 
     downloader = GLMDownloader(bucket=settings.aws_bucket, product_prefix=settings.aws_product_prefix, goes_number=19)
 
-    dl = downloader.download_range(fetch_start_utc, end_utc, interval_seconds=settings.aws_interval_seconds, dest_root=settings.raw_dir)
-
-    flashes = []
-    events = []
-
+    dsn = get_postgres_dsn()
+    flashes: list[pd.DataFrame] = []
+    events: list[pd.DataFrame] = []
     need_events = True
     events_full_history = params.mode in (3, 4)
     if need_events and not events_full_history:
@@ -413,26 +439,36 @@ def render_png(
     else:
         events_extract_start_utc = fetch_start_utc
 
-    for p in dl.downloaded:
+    if dsn:
         try:
-            fdf = extract_points_from_lcfa(p, kind="flash").df
-            flashes.append(fdf)
+            flashes_df_db = load_points_from_postgres(dsn=dsn, kind="flash", start_utc=fetch_start_utc, end_utc=end_utc)
+            if not flashes_df_db.empty:
+                flashes.append(flashes_df_db)
 
             if need_events:
-                # Only parse recent event files when used just for polygon overlay.
-                if events_full_history:
-                    do_events = True
-                else:
-                    # Compare by file mtime as a cheap proxy; if in doubt parse.
-                    do_events = True
+                events_df_db = load_points_from_postgres(dsn=dsn, kind="event", start_utc=events_extract_start_utc, end_utc=end_utc)
+                if not events_df_db.empty:
+                    events.append(events_df_db)
+        except Exception:
+            # DB is optional; fall back to the existing download path.
+            flashes = []
+            events = []
 
-                if do_events:
+    if not flashes:
+        dl = downloader.download_range(fetch_start_utc, end_utc, interval_seconds=settings.aws_interval_seconds, dest_root=settings.raw_dir)
+
+        for p in dl.downloaded:
+            try:
+                fdf = extract_points_from_lcfa(p, kind="flash").df
+                flashes.append(fdf)
+
+                if need_events:
                     edf = extract_points_from_lcfa(p, kind="event").df
                     if not edf.empty:
                         edf = edf[edf["time"] >= events_extract_start_utc]
                     events.append(edf)
-        except Exception:
-            continue
+            except Exception:
+                continue
 
     flashes_df = pd.concat(flashes, ignore_index=True) if flashes else pd.DataFrame(columns=["time", "lat", "lon"])
     events_df = pd.concat(events, ignore_index=True) if events else pd.DataFrame(columns=["time", "lat", "lon"])
@@ -465,7 +501,7 @@ def render_png(
     # Background overlay.
     bg_headers: dict[str, str] = {}
     bg_headers["X-Background-Settings-Enabled"] = str(int(settings.background_enabled))
-    bg = None
+    bg: BackgroundImage | None = None
     if params.background:
         bg_diag: dict[str, str] = {}
         try:
@@ -483,7 +519,34 @@ def render_png(
             fig_tmp, ax_tmp = plt.subplots(figsize=(8, 8), dpi=settings.plot_dpi)
             lon_min, lon_max, lat_min, lat_max = _set_extent(ax_tmp, lat0=params.lat0, lon0=params.lon0, max_radius_km=max_r)
             plt.close(fig_tmp)
-            bg = provider.get_background(dt_utc=end_utc, extent=(lon_min, lon_max, lat_min, lat_max), diag=bg_diag)
+            # Fetch background in a daemon worker so a slow network/S3 call cannot block rendering.
+            bg_result: dict[str, object] = {"value": None, "error": None}
+
+            def _load_background() -> None:
+                try:
+                    bg_result["value"] = provider.get_background(
+                        dt_utc=end_utc,
+                        extent=(lon_min, lon_max, lat_min, lat_max),
+                        diag=bg_diag,
+                    )
+                except Exception as e:
+                    bg_result["error"] = e
+
+            worker = threading.Thread(target=_load_background, daemon=True)
+            worker.start()
+            worker.join(timeout=10)
+
+            if worker.is_alive():
+                bg = None
+                bg_diag.setdefault("reason", "background_timeout")
+                bg_diag.setdefault("detail", "background fetch timed out")
+            elif bg_result["error"] is not None:
+                bg = None
+                e = bg_result["error"]
+                bg_diag.setdefault("reason", "exception")
+                bg_diag.setdefault("detail", f"{type(e).__name__}: {e}")
+            else:
+                bg = cast(BackgroundImage | None, bg_result["value"])
         except Exception as e:
             bg = None
 
@@ -527,9 +590,9 @@ def render_png(
     figsize = (6.6, 5.6) if params.thumb else (8.4, 7.2)
     dpi = 96 if params.thumb else settings.plot_dpi
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    # Keep most of the figure for the axes so ABI fills to the edges;
-    # reserve only a small margin for figure-level legends and metadata.
-    fig.subplots_adjust(left=0.035, right=0.985, top=0.975, bottom=0.055)
+    # Make axes occupy nearly the full figure so the image fills the PNG.
+    fig.patch.set_facecolor("white")
+    fig.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005)
     lon_min, lon_max, lat_min, lat_max = _set_extent(ax, lat0=params.lat0, lon0=params.lon0, max_radius_km=max_r)
     if bg is not None:
         bg_img = ax.imshow(
@@ -557,12 +620,13 @@ def render_png(
         label=params.taker_name,
     )
     if ring_handles:
-        rings_leg = fig.legend(
+        # Place the ring legend inside the axes (axes fraction coords)
+        rings_leg = ax.legend(
             ring_handles,
             ring_labels,
             loc="upper left",
-            bbox_to_anchor=(0.04, 0.965),
-            bbox_transform=fig.transFigure,
+            bbox_to_anchor=(0.02, 0.96),
+            bbox_transform=ax.transAxes,
             frameon=False,
             fontsize=9 if params.thumb else 10,
             title=ring_title,
@@ -621,12 +685,13 @@ def render_png(
                 time_labels.append(f"{bin_start:%H:%M}–{bin_end:%H:%M}")
 
             if time_handles:
-                time_leg = fig.legend(
+                # Place the time legend inside the axes so it is part of the image
+                time_leg = ax.legend(
                     time_handles,
                     time_labels,
                     loc="upper right",
-                    bbox_to_anchor=(0.985, 0.965),
-                    bbox_transform=fig.transFigure,
+                    bbox_to_anchor=(0.98, 0.96),
+                    bbox_transform=ax.transAxes,
                     frameon=False,
                     fontsize=7 if params.thumb else 8,
                     title="Tempo (local)",
@@ -645,7 +710,7 @@ def render_png(
     elif params.mode == 4:
         density_img = _plot_density(ax, events_df)
 
-    _add_logo(fig, thumb=params.thumb)
+    _add_logo(fig, thumb=params.thumb, ax=ax)
 
     ax.set_xticks([])
     ax.set_yticks([])
@@ -676,7 +741,8 @@ def render_png(
         next_update_local = None
 
     buf = BytesIO()
-    fig.savefig(buf, format="png")
+    # Save without extra padding so the PNG contains the full axes content.
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0)
     plt.close(fig)
 
     png = buf.getvalue()

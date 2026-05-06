@@ -49,7 +49,15 @@ class GLMDownloader:
         self.bucket = bucket
         self.product_prefix = product_prefix
         self.goes_number = goes_number
-        self.s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+        self.s3 = boto3.client(
+            "s3",
+            config=Config(
+                signature_version=UNSIGNED,
+                connect_timeout=5,
+                read_timeout=10,
+                retries={"max_attempts": 2, "mode": "standard"},
+            ),
+        )
 
         # Cache per hour prefix -> {stamp: key}
         self._hour_index: dict[str, dict[str, str]] = {}
