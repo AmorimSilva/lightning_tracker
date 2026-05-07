@@ -20,6 +20,98 @@ public static class LightningTrackerEndpoints
             return Results.Json(selection);
         });
 
+        app.MapGet("/api/events", async (
+            HttpRequest request,
+            ServiceTakerRepository repo,
+            LightningDataService dataService,
+            CancellationToken ct
+        ) =>
+        {
+            var takerId = GetIntQuery(request, "takerId");
+            var mode = GetIntQuery(request, "mode", 1);
+            var startLocalStr = GetStringQuery(request, "startLocal");
+            var endLocalStr = GetStringQuery(request, "endLocal");
+            var initialLoadHours = GetIntQuery(request, "initialLoadHours", 0);
+
+            // BRT offset (UTC-3) for interpreting local times from frontend
+            var brtOffset = TimeSpan.FromHours(-3);
+
+            DateTime endUtc;
+            if (string.IsNullOrEmpty(endLocalStr))
+                endUtc = DateTime.UtcNow;
+            else
+            {
+                var parsed = DateTime.Parse(endLocalStr);
+                var dto = new DateTimeOffset(parsed, brtOffset);
+                endUtc = dto.UtcDateTime;
+            }
+
+            DateTime startUtc;
+            if (string.IsNullOrEmpty(startLocalStr))
+                startUtc = endUtc.AddHours(initialLoadHours > 0 ? -initialLoadHours : -1);
+            else
+            {
+                var parsed = DateTime.Parse(startLocalStr);
+                var dto = new DateTimeOffset(parsed, brtOffset);
+                startUtc = dto.UtcDateTime;
+            }
+
+            string kind = mode == 3 || mode == 4 ? "event" : "flash";
+
+            // takerId <= 0 means "América do Sul" — fetch all events without spatial filter
+            if (takerId <= 0)
+            {
+                var allEvents = await dataService.GetAllEventsAsync(startUtc, endUtc, kind, 30000, ct);
+                return Results.Json(allEvents);
+            }
+
+            var taker = await repo.GetByIdAsync(takerId, ct);
+            if (taker is null)
+                return Results.NotFound(new { message = "Tomador não encontrado" });
+
+            // Also fetch ALL events (not just within 250km of taker)
+            var events = await dataService.GetAllEventsAsync(startUtc, endUtc, kind, 30000, ct);
+            return Results.Json(events);
+        });
+
+        app.MapGet("/api/background", async (
+            HttpRequest request,
+            ServiceTakerRepository repo,
+            PythonBackgroundService bgService,
+            CancellationToken ct
+        ) =>
+        {
+            var takerId = GetIntQuery(request, "takerId");
+            var maxRadiusKm = 250.0;
+            var endLocalStr = GetStringQuery(request, "endLocal");
+
+            var taker = await repo.GetByIdAsync(takerId, ct);
+            if (taker is null)
+                return Results.NotFound(new { message = "Tomador não encontrado" });
+
+            DateTime endUtc = string.IsNullOrEmpty(endLocalStr) ? DateTime.UtcNow : DateTime.Parse(endLocalStr).ToUniversalTime();
+
+            double dLat = maxRadiusKm / 111.0;
+            double dLon = maxRadiusKm / (111.0 * Math.Max(0.2, Math.Cos(taker.Lat * Math.PI / 180.0)));
+            double minLat = taker.Lat - dLat;
+            double maxLat = taker.Lat + dLat;
+            double minLon = taker.Lon - dLon;
+            double maxLon = taker.Lon + dLon;
+
+            var png = await bgService.GetBackgroundPngAsync(minLon, maxLon, minLat, maxLat, endUtc, ct);
+            if (png == null || png.Length == 0)
+            {
+                // Return an empty transparent 1x1 PNG so Leaflet doesn't break
+                byte[] emptyPng = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
+                return Results.File(emptyPng, "image/png");
+            }
+
+            var response = request.HttpContext.Response;
+            SetResponseHeader(response, "X-Background-Bounds", $"{minLat},{minLon},{maxLat},{maxLon}");
+            
+            return Results.File(png, "image/png");
+        });
+
         app.MapGet("/api/render", async (
             HttpRequest request,
             ServiceTakerRepository repo,

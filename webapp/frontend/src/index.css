@@ -1,21 +1,28 @@
-:root {
-  --brand-blue: #0b77c1;
-  --control-bg: #b8d9f2;
+@import 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
 
-  font-family: system-ui, 'Segoe UI', Roboto, Arial, sans-serif;
-  font-size: 18px;
-  line-height: 1.35;
-  color: #111;
-  background: #fff;
-  text-rendering: optimizeLegibility;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: 'Inter', 'Segoe UI', Roboto, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-body {
-  margin: 0;
+button, input, select {
+  font: inherit;
 }
 
-* {
-  box-sizing: border-box;
+button {
+  border: 0;
 }
