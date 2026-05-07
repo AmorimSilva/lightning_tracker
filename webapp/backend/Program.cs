@@ -17,6 +17,7 @@ builder.Services.AddSingleton<PythonActivityService>();
 builder.Services.AddSingleton<PythonTableService>();
 builder.Services.AddSingleton<TableCatalogService>();
 builder.Services.AddSingleton<PythonBackgroundService>();
+builder.Services.AddSingleton<PythonAbiService>();
 builder.Services.AddSingleton<LightningDataService>();
 builder.Services.AddHostedService<GlmSyncHostedService>();
 

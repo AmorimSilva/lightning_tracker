@@ -37,6 +37,11 @@ export default function LightningMap({
   showRings,
   events,
   backgroundIr,
+  abiUrl,
+  abiBounds,
+  abiUtc,
+  abiLoading,
+  abiError,
   startLocal,
   endLocal,
   animating,
@@ -63,24 +68,9 @@ export default function LightningMap({
     return { min, max: max === min ? max + 1 : max }
   }, [events])
 
-  // Background overlay bounds
-  const bgBounds = useMemo(() => {
-    if (!taker) return null
-    const maxR = 250
-    const dLat = maxR / 111.0
-    const dLon = maxR / (111.0 * Math.max(0.2, Math.cos((taker.lat * Math.PI) / 180.0)))
-    return [
-      [taker.lat - dLat, taker.lon - dLon],
-      [taker.lat + dLat, taker.lon + dLon],
-    ]
-  }, [taker])
-
-  const bgUrl = useMemo(() => {
-    if (!taker || !backgroundIr) return null
-    const qs = new URLSearchParams({ takerId: taker.id, _ts: Date.now() })
-    if (endLocal) qs.set('endLocal', endLocal)
-    return `/api/background?${qs.toString()}`
-  }, [taker, backgroundIr, endLocal])
+  // ABI overlay: use props from useAbiOverlay hook
+  // abiBounds comes from the hook (South America by default)
+  const leafletAbiBounds = abiBounds || null
 
   // Format metadata
   const now = new Date()
@@ -97,11 +87,20 @@ export default function LightningMap({
     ? new Date(animFrameTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
     : now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
 
+  // Define South America bounds to prevent panning away
+  const southAmericaBounds = [
+    [-56, -95], // Southwest
+    [15, -30]   // Northeast
+  ];
+
   return (
     <div className="lt-map-container">
       <MapContainer
         center={center}
         zoom={zoom}
+        minZoom={5}
+        maxBounds={southAmericaBounds}
+        maxBoundsViscosity={1.0}
         className="lt-map"
         zoomControl={false}
         attributionControl={false}
@@ -109,13 +108,21 @@ export default function LightningMap({
         <MapController center={center} zoom={zoom} />
 
         <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; OpenStreetMap'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          subdomains='abcd'
+          maxZoom={20}
         />
 
-        {/* IR background overlay */}
-        {bgUrl && bgBounds && (
-          <ImageOverlay url={bgUrl} bounds={bgBounds} opacity={0.6} zIndex={1} />
+        {/* ABI IR CH13 background overlay */}
+        {backgroundIr && abiUrl && leafletAbiBounds && (
+          <ImageOverlay
+            key={abiUrl}
+            url={abiUrl}
+            bounds={leafletAbiBounds}
+            opacity={1.0}
+            zIndex={1}
+          />
         )}
 
         {/* Distance rings */}
@@ -135,14 +142,14 @@ export default function LightningMap({
                 }}
               />
             ))
-        )}
+          )}
 
         {/* Taker center markers */}
         {showRings && (showAllTakers && allTakers ? allTakers : (taker ? [taker] : []))
           .filter(t => t.id !== 0)
           .map((t) => (
             <Marker key={`marker-${t.id}`} position={[t.lat, t.lon]} icon={takerIcon} />
-        ))}
+          ))}
 
         {/* Lightning events */}
         {events.map((ev) => {
@@ -168,6 +175,17 @@ export default function LightningMap({
         <span>Hora Inicial: {startLabel} BRT</span>
         <span>Hora final: {endLabel === 'Agora' ? endLabel : endLabel + ' BRT'}</span>
         <span>Intervalo: {intervalLabel}</span>
+        {backgroundIr && abiUtc && (
+          <span className="lt-map-meta__abi">
+            🛰 ABI: {new Date(abiUtc).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} UTC
+          </span>
+        )}
+        {backgroundIr && abiLoading && (
+          <span className="lt-map-meta__abi lt-map-meta__abi--loading">🛰 Carregando ABI...</span>
+        )}
+        {backgroundIr && abiError && (
+          <span className="lt-map-meta__abi lt-map-meta__abi--error">🛰 Erro ABI: {abiError}</span>
+        )}
       </div>
 
       {/* Animation clock (top right) */}
@@ -187,11 +205,11 @@ export default function LightningMap({
         <div className="lt-map-controls__downloads">
           <button onClick={onDownloadImage} className="lt-map-dl-btn">
             Fazer o Download da Imagem Atual
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" /></svg>
           </button>
           <button onClick={onDownloadAnim} className="lt-map-dl-btn">
             Fazer o Download da Animação
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" /></svg>
           </button>
         </div>
       </div>

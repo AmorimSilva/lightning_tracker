@@ -43,6 +43,23 @@
   text-align: center;
 }
 
+.lt-map-meta__abi {
+  color: #7ee8ff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-top: 2px;
+}
+
+.lt-map-meta__abi--loading {
+  animation: lt-abi-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes lt-abi-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* Clock badge (top right) */
 .lt-map-clock {
   position: absolute;

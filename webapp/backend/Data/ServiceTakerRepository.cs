@@ -34,6 +34,11 @@ public sealed class ServiceTakerRepository
 
     public async Task<ServiceTaker?> GetByIdAsync(int id, CancellationToken cancellationToken)
     {
+        if (id == 0)
+        {
+            return new ServiceTaker(0, "América do Sul", -14.0, -52.0);
+        }
+
         try
         {
             return await LoadByIdFromDatabaseAsync(id, cancellationToken);

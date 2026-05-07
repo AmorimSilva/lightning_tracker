@@ -7,6 +7,8 @@ import ControlPanel from './components/ControlPanel'
 import StatsPanel from './components/StatsPanel'
 import SideMenu from './components/SideMenu'
 import { useEvents } from './hooks/useEvents'
+import { useAbiOverlay } from './hooks/useAbiOverlay'
+
 
 const DEFAULT_RENDER_HOURS = 4
 
@@ -123,6 +125,24 @@ function App() {
     endLocal: normalizeDateTimeLocal(endLocal),
     initialLoadHours,
     refreshIntervalMs: 60_000,
+  })
+
+  // ─── ABI overlay hook ───
+  // Compute UTC reference from endLocal (BRT = UTC-3) or fall back to now
+  const abiUtcIso = useMemo(() => {
+    if (endLocal) {
+      // endLocal is a local datetime string (BRT, UTC-3); add 3h to get UTC
+      const d = new Date(endLocal)
+      d.setHours(d.getHours() + 3)
+      return d.toISOString()
+    }
+    return new Date().toISOString()
+  }, [endLocal])
+
+  const { abiUrl, abiBounds, abiUtc, abiLoading, abiError } = useAbiOverlay({
+    enabled: backgroundIr,
+    utcIso: abiUtcIso,
+    cmap: 'gray_r',
   })
 
   // ─── Load takers ───
@@ -366,6 +386,11 @@ function App() {
               showRings={showRings}
               events={events}
               backgroundIr={backgroundIr}
+              abiUrl={abiUrl}
+              abiBounds={abiBounds}
+              abiUtc={abiUtc}
+              abiLoading={abiLoading}
+              abiError={abiError}
               startLocal={startLocal}
               endLocal={endLocal}
               animating={animating}

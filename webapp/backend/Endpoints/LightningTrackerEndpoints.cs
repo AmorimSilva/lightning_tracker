@@ -112,6 +112,39 @@ public static class LightningTrackerEndpoints
             return Results.File(png, "image/png");
         });
 
+        // ── ABI IR Tile ──────────────────────────────────────────────────────────
+        // Returns a georeferenced RGBA PNG for Leaflet ImageOverlay (full ABI disk, reprojected).
+        // Query params:
+        //   utc    ISO8601 UTC timestamp (defaults to now)
+        //   cmap   gray_r | ir_enhanced (default: gray_r)
+        // Response headers:
+        //   X-Abi-Bounds   lat_min,lon_min,lat_max,lon_max  (real disk bounds)
+        //   X-Abi-Utc      actual UTC of the ABI image used
+        app.MapGet("/api/abi", async (
+            HttpRequest request,
+            PythonAbiService abiService,
+            CancellationToken ct
+        ) =>
+        {
+            var utcStr = GetStringQuery(request, "utc");
+            DateTime utcTime = string.IsNullOrEmpty(utcStr) ? DateTime.UtcNow : DateTime.Parse(utcStr).ToUniversalTime();
+            string cmap = GetStringQuery(request, "cmap") ?? "gray_r";
+
+            var result = await abiService.GetTileAsync(utcTime, cmap, ct);
+
+            if (result is null)
+            {
+                byte[] emptyPng = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
+                return Results.File(emptyPng, "image/png");
+            }
+
+            var response = request.HttpContext.Response;
+            SetResponseHeader(response, "X-Abi-Bounds", result.Bounds);
+            SetResponseHeader(response, "X-Abi-Utc", result.UtcTime.ToString("O"));
+
+            return Results.File(result.Png, "image/png");
+        });
+
         app.MapGet("/api/render", async (
             HttpRequest request,
             ServiceTakerRepository repo,
@@ -285,6 +318,17 @@ public static class LightningTrackerEndpoints
 
         var text = value.ToString().Trim();
         return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static double GetDoubleQuery(HttpRequest request, string key, double defaultValue = 0.0)
+    {
+        if (!request.Query.TryGetValue(key, out var value))
+            return defaultValue;
+
+        return double.TryParse(value.ToString(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : defaultValue;
     }
 
     private static void SetResponseHeader(HttpResponse response, string key, string? value)
