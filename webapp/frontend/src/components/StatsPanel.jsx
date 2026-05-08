@@ -13,13 +13,6 @@ export default function StatsPanel({ stats, startLocal, endLocal }) {
 
   return (
     <div className="lt-stats">
-      {/* Time interval */}
-      <div className="lt-stats__header">
-        <span className="lt-stats__title">Intervalo de Tempo</span>
-        <div className="lt-stats__time-badge">
-          {startLabel} a<br />{endLabel}
-        </div>
-      </div>
 
       {/* Lightning counts */}
       <div className="lt-stats__section-title">Relâmpagos</div>

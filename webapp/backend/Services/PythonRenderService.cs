@@ -37,6 +37,9 @@ public sealed class PythonRenderService
         int initialLoadHours,
         int background,
         bool thumb,
+        int binMinutes,
+        bool showPolygon,
+        bool animate,
         CancellationToken cancellationToken
     )
     {
@@ -63,6 +66,12 @@ public sealed class PythonRenderService
             background.ToString(),
             "--thumb",
             thumb ? "1" : "0",
+            "--bin-minutes",
+            binMinutes.ToString(),
+            "--show-polygon",
+            showPolygon ? "1" : "0",
+            "--animate",
+            animate ? "1" : "0",
         };
 
         if (!string.IsNullOrWhiteSpace(startLocal))

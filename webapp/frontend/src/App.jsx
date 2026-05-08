@@ -91,10 +91,6 @@ function App() {
   const [showRings, setShowRings] = useState(true)
   const [showAllTakers, setShowAllTakers] = useState(true)
 
-  const [animating, setAnimating] = useState(false)
-  const [frames, setFrames] = useState([])
-  const [frameIndex, setFrameIndex] = useState(0)
-  const [isPrefetching, setIsPrefetching] = useState(false)
   const [markerInterval, setMarkerInterval] = useState(10)
   const [visMode, setVisMode] = useState('points')
   const [lastUpdateLocal, setLastUpdateLocal] = useState('')
@@ -114,6 +110,10 @@ function App() {
 
   const [tableModalOpen, setTableModalOpen] = useState(false)
   const [tableTitle, setTableTitle] = useState('')
+  const [animating, setAnimating] = useState(false)
+  const [playbackTime, setPlaybackTime] = useState(null)
+  const [accumulatedMode, setAccumulatedMode] = useState(false)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1000) // ms per frame
 
   const autoSelectRequestedRef = useRef(false)
 
@@ -142,14 +142,12 @@ function App() {
   // ─── ABI overlay hook ───
   // Compute UTC reference from endLocal (BRT = UTC-3) or fall back to now
   const abiUtcIso = useMemo(() => {
-    if (endLocal) {
-      // endLocal is a local datetime string (BRT, UTC-3); add 3h to get UTC
-      const d = new Date(endLocal)
-      d.setHours(d.getHours() + 3)
-      return d.toISOString()
-    }
-    return new Date().toISOString()
-  }, [endLocal])
+    const refTime = (animating && playbackTime) ? new Date(playbackTime) : (endLocal ? new Date(endLocal) : new Date())
+    // refTime is local (BRT, UTC-3); add 3h to get UTC
+    const d = new Date(refTime)
+    d.setHours(d.getHours() + 3)
+    return d.toISOString()
+  }, [endLocal, animating, playbackTime])
 
   const { abiUrl, abiBounds, abiUtc, abiLoading, abiError } = useAbiOverlay({
     enabled: backgroundIr,
@@ -344,73 +342,36 @@ function App() {
     triggerBrowserDownload(blob, `${safe}_table_${ts}.csv`)
   }
 
-  // ─── Animation (preserved logic, adapted) ───
-  function _buildFrameTimestamps(endLocalStr, hours) {
-    const end = endLocalStr ? new Date(endLocalStr) : new Date()
-    const step = 5
-    const total = Math.min(3, Math.max(1, Number(hours) || 1)) * 60
-    const count = Math.floor(total / step) + 1
-    const stamps = []
-    const startMs = end.getTime() - (count - 1) * step * 60 * 1000
-    for (let i = 0; i < count; i++) {
-      stamps.push(formatLocalIso(new Date(startMs + i * step * 60 * 1000)))
-    }
-    return stamps
-  }
-
-  async function fetchFrameForTs(ts, { full = false, hours = animHours } = {}) {
-    if (!selectedTaker) return null
-    try {
-      const end = new Date(ts)
-      const start = new Date(end.getTime() - Math.min(3, Math.max(1, Number(hours) || 1)) * 60 * 60 * 1000)
-      const qs = buildQuery({
-        takerId: selectedTaker.id, mode,
-        startLocal: formatLocalIso(start), endLocal: ts,
-        background: backgroundIr ? 1 : 0, initialLoadHours,
-        thumb: full ? 0 : 1, _ts: Date.now(),
-      })
-      const res = await fetch(`/api/render/frame?${qs}`)
-      if (!res.ok) return null
-      return await res.blob()
-    } catch { return null }
-  }
-
-  async function prefetchFrames(endLocalStr, hours) {
-    setIsPrefetching(true)
-    try {
-      const stamps = _buildFrameTimestamps(endLocalStr, hours)
-      const nextFrames = []
-      for (const ts of stamps) {
-        const existing = frames.find((f) => f.ts === ts)
-        if (existing) { nextFrames.push(existing); continue }
-        const blob = await fetchFrameForTs(ts, { full: false, hours })
-        nextFrames.push({ ts, url: blob ? URL.createObjectURL(blob) : null })
-      }
-      frames.forEach((f) => { if (f?.url) try { URL.revokeObjectURL(f.url) } catch {} })
-      setFrames(nextFrames)
-      setFrameIndex(0)
-    } finally {
-      setIsPrefetching(false)
-    }
-  }
+  // ─── Animation (Dynamic Playback) ───
 
   function startAnimation() {
     if (!selectedTaker) return
-    const endStr = normalizeDateTimeLocal(endLocal) || ''
-    prefetchFrames(endStr, animHours)
+    const start = startLocal ? new Date(startLocal).getTime() : Date.now() - (initialLoadHours || 4) * 3600000
+    setPlaybackTime(start)
     setAnimating(true)
   }
 
   function stopAnimation() { setAnimating(false) }
 
   function stepBack() {
-    if (frames.length === 0) return
-    setFrameIndex((i) => (i - 1 + frames.length) % frames.length)
+    const intervalMs = (markerInterval || 10) * 60000
+    setPlaybackTime((prev) => (prev || Date.now()) - intervalMs)
   }
 
   function stepForward() {
-    if (frames.length === 0) return
-    setFrameIndex((i) => (i + 1) % frames.length)
+    const intervalMs = (markerInterval || 10) * 60000
+    setPlaybackTime((prev) => (prev || Date.now()) + intervalMs)
+  }
+
+  function resetFilters() {
+    setAnimating(false)
+    setPlaybackTime(null)
+    setStartLocal('')
+    setEndLocal('')
+    setVisMode('points')
+    setMarkerInterval(10)
+    setAccumulatedMode(true)
+    setBackgroundIr(false)
   }
 
   async function downloadCurrentImage() {
@@ -418,14 +379,20 @@ function App() {
     const name = selectedTaker.name || 'taker'
     const safe = name.trim().replace(/[^A-Za-z0-9]+/g, '_').slice(0, 64)
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    const filename = `${safe}_mode${mode}_${ts}.png`
+    const filename = `${safe}_mapa_${ts}.png`
     try {
       const effectiveStart = normalizeDateTimeLocal(startLocal) || formatLocalIso(new Date(Date.now() - DEFAULT_RENDER_HOURS * 3600000))
       const effectiveEnd = normalizeDateTimeLocal(endLocal) || formatLocalIso(new Date())
       const qs = buildQuery({
-        takerId: selectedTaker.id, mode,
-        startLocal: effectiveStart, endLocal: effectiveEnd,
-        initialLoadHours, background: backgroundIr ? 1 : 0, _ts: Date.now(),
+        takerId: selectedTaker.id, 
+        mode,
+        startLocal: effectiveStart, 
+        endLocal: effectiveEnd,
+        initialLoadHours, 
+        background: backgroundIr ? 1 : 0, 
+        binMinutes: markerInterval || 10,
+        showPolygon: 0, // Clean look as requested
+        _ts: Date.now(),
       })
       const res = await fetch(`/api/render?${qs}`)
       if (!res.ok) return
@@ -434,14 +401,61 @@ function App() {
     } catch (e) { console.error(e) }
   }
 
+  async function downloadAnimation() {
+    if (!selectedTaker) return
+    const name = selectedTaker.name || 'taker'
+    const safe = name.trim().replace(/[^A-Za-z0-9]+/g, '_').slice(0, 64)
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const filename = `${safe}_animacao_${ts}.mp4`
+    
+    // Notify user - animation takes time
+    const originalText = 'Processando animação...'
+    console.log(originalText)
+    
+    try {
+      const effectiveStart = normalizeDateTimeLocal(startLocal) || formatLocalIso(new Date(Date.now() - DEFAULT_RENDER_HOURS * 3600000))
+      const effectiveEnd = normalizeDateTimeLocal(endLocal) || formatLocalIso(new Date())
+      
+      const qs = buildQuery({
+        takerId: selectedTaker.id, 
+        mode,
+        startLocal: effectiveStart, 
+        endLocal: effectiveEnd,
+        binMinutes: markerInterval || 10,
+        showPolygon: 0,
+        _ts: Date.now(),
+      })
+      
+      const res = await fetch(`/api/render/animation?${qs}`)
+      if (!res.ok) {
+        alert('Erro ao gerar animação. Verifique se o período não é muito longo.')
+        return
+      }
+      const blob = await res.blob()
+      triggerBrowserDownload(blob, filename)
+    } catch (e) { 
+      console.error(e)
+      alert('Falha na conexão ao gerar animação.')
+    }
+  }
+
   // ─── Animation playback loop ───
   useEffect(() => {
-    if (!animating || !frames.length) return
+    if (!animating) return
+    
+    const intervalMin = markerInterval || 10
+    const startMs = startLocal ? new Date(startLocal).getTime() : Date.now() - (initialLoadHours || 4) * 3600000
+    const endMs = endLocal ? new Date(endLocal).getTime() : Date.now()
+
     const id = setInterval(() => {
-      setFrameIndex((i) => (i + 1) % frames.length)
-    }, 333) // ~3 fps
+      setPlaybackTime(prev => {
+        const next = (prev || startMs) + intervalMin * 60000
+        return next > endMs ? startMs : next
+      })
+    }, playbackSpeed)
+
     return () => clearInterval(id)
-  }, [animating, frames])
+  }, [animating, markerInterval, startLocal, endLocal, initialLoadHours, playbackSpeed])
 
   // ─── Initial load ───
   useEffect(() => { loadTakers() }, [])
@@ -522,13 +536,14 @@ function App() {
               markerInterval={markerInterval}
               visMode={visMode}
               animating={animating}
-              animFrameTime={animFrameTime}
+              playbackTime={playbackTime}
+              accumulatedMode={accumulatedMode}
               onPlay={startAnimation}
               onPause={stopAnimation}
               onStepBack={stepBack}
               onStepForward={stepForward}
               onDownloadImage={downloadCurrentImage}
-              onDownloadAnim={() => {}}
+              onDownloadAnim={downloadAnimation}
               lastUpdateLocal={lastUpdateLocal}
               initialLoadHours={initialLoadHours}
             />
@@ -574,6 +589,10 @@ function App() {
             onShowMapChange={setShowMap}
             showRings={showRings}
             onShowRingsChange={setShowRings}
+            accumulatedMode={accumulatedMode}
+            onAccumulatedModeChange={setAccumulatedMode}
+            onReset={resetFilters}
+            animating={animating}
           />
 
           {selectedTaker && selectedTaker.id !== 0 && (

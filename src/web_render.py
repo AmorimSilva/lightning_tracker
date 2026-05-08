@@ -38,6 +38,11 @@ try:
 except Exception:
     gpd = None
 
+try:
+    import contextily as ctx # type: ignore
+except Exception:
+    ctx = None
+
 from .background import AbiIrBackgroundProvider, BackgroundImage
 from .data_store import get_postgres_dsn, load_points_from_postgres
 from .config import load_settings
@@ -59,6 +64,8 @@ class RenderParams:
     initial_load_hours: int
     background: bool
     thumb: bool = False
+    bin_minutes: int = 30
+    show_polygon: bool = True
 
 
 @dataclass(frozen=True)
@@ -688,6 +695,13 @@ def render_png(
             zorder=0,
             aspect="auto",
         )
+    elif ctx is not None:
+        # Add dark matter basemap if no ABI background is requested
+        try:
+            ctx.add_basemap(ax, crs="EPSG:4326", source=ctx.providers.CartoDB.DarkMatter, zorder=0)
+        except Exception:
+            pass
+
     bg_headers["X-Debug-BG-Imshow-Executed"] = str(bg_imshow_executed)
 
     if settings.plot_show_admin_shapes:
@@ -720,16 +734,17 @@ def render_png(
             pass
 
     # Polygon from events when available.
-    poly_df = events_df if not events_df.empty else flashes_df
-    if poly_df is not None and not poly_df.empty:
-        _draw_polygon(ax, lon=poly_df["lon"].to_numpy(), lat=poly_df["lat"].to_numpy())
+    if params.show_polygon:
+        poly_df = events_df if not events_df.empty else flashes_df
+        if poly_df is not None and not poly_df.empty:
+            _draw_polygon(ax, lon=poly_df["lon"].to_numpy(), lat=poly_df["lat"].to_numpy())
 
     if params.mode == 1:
         if not flashes_df.empty:
             t_local = flashes_df["time"].dt.tz_convert(plot_start.tzinfo)
             duration_minutes = max(1.0, (plot_end - plot_start).total_seconds() / 60.0)
-            # Use 30-minute bins to keep the time legend readable without overcrowding.
-            bin_minutes = 30
+            
+            bin_minutes = max(1, int(params.bin_minutes))
             n_bins = max(1, int(np.ceil(duration_minutes / float(bin_minutes))))
 
             x = flashes_df["lon"].to_numpy()
@@ -871,8 +886,86 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--initial-load-hours", type=int, default=0, help="Initial load hours optimization")
     p.add_argument("--background", type=int, default=0, help="1 to enable background overlay (if configured)")
     p.add_argument("--thumb", type=int, default=0, choices=[0, 1], help="1 to render a smaller thumbnail frame")
+    p.add_argument("--bin-minutes", type=int, default=30, help="Interval in minutes for legend bins")
+    p.add_argument("--show-polygon", type=int, default=1, help="1 to show event polygon, 0 to hide")
+    p.add_argument("--animate", type=int, default=0, help="1 to generate an MP4 animation instead of a static PNG")
 
     return p
+
+
+def render_animation(
+    *,
+    settings_path: Path,
+    params: RenderParams,
+) -> bytes:
+    import shutil
+    import subprocess
+    
+    # Create temporary directory for frames
+    temp_dir = Path("temp_anim") / f"anim_{int(time.time())}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        current = params.start_local
+        frame_idx = 0
+        
+        while current <= params.end_local:
+            frame_idx += 1
+            # For animation, we use a sliding window of N hours or just accumulated from start?
+            # User usually wants to see the evolution.
+            # Let's render each frame with data up to 'current'
+            frame_params = RenderParams(
+                taker_name=params.taker_name,
+                lat0=params.lat0,
+                lon0=params.lon0,
+                mode=params.mode,
+                start_local=params.start_local, # Accumulated from start
+                end_local=current,
+                dynamic_start=False,
+                dynamic_end=False,
+                initial_load_hours=0,
+                background=params.background,
+                thumb=params.thumb,
+                bin_minutes=params.bin_minutes,
+                show_polygon=params.show_polygon
+            )
+            
+            png, _, _ = render_png(settings_path=settings_path, params=frame_params)
+            frame_path = temp_dir / f"frame_{frame_idx:04d}.png"
+            frame_path.write_bytes(png)
+            
+            current += timedelta(minutes=params.bin_minutes)
+            if frame_idx > 300: # Safety limit
+                break
+        
+        if frame_idx == 0:
+            raise ValueError("Nenhum frame gerado para a animação")
+            
+        output_mp4 = temp_dir / "animation.mp4"
+        
+        # Call ffmpeg to create MP4
+        # -y: overwrite
+        # -framerate: 5 fps (user might want to adjust)
+        # -i: input pattern
+        # -c:v libx264: H.264 codec
+        # -pix_fmt yuv420p: compatibility
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", "5",
+            "-i", str(temp_dir / "frame_%04d.png"),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", # Ensure even dimensions
+            str(output_mp4)
+        ]
+        
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        return output_mp4.read_bytes()
+        
+    finally:
+        # Cleanup
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def main() -> int:
@@ -902,9 +995,17 @@ def main() -> int:
         initial_load_hours=int(args.initial_load_hours),
         background=bool(int(args.background)),
         thumb=bool(int(args.thumb)),
+        bin_minutes=int(args.bin_minutes),
+        show_polygon=bool(int(args.show_polygon)),
     )
 
     settings_path = Path(str(args.settings))
+    
+    if args.animate:
+        mp4_bytes = render_animation(settings_path=settings_path, params=params)
+        sys.stdout.buffer.write(mp4_bytes)
+        return 0
+
     png, metadata, extra_headers = render_png(settings_path=settings_path, params=params)
 
     # Protocol: stderr carries key/value metadata headers; stdout = raw PNG bytes.

@@ -26,3 +26,8 @@ button, input, select {
 button {
   border: 0;
 }
+
+select option {
+  background-color: #1a1a1a;
+  color: #fff;
+}

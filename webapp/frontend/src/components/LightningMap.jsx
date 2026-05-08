@@ -4,10 +4,10 @@ import L from 'leaflet'
 import { jetColor } from '../utils/haversine'
 import './LightningMap.css'
 
-// Black X marker for taker center
+// White X marker for taker center
 const takerIcon = L.divIcon({
   className: 'lt-taker-icon',
-  html: `<svg width="28" height="28" viewBox="0 0 28 28"><line x1="6" y1="6" x2="22" y2="22" stroke="black" stroke-width="3.5" stroke-linecap="round"/><line x1="22" y1="6" x2="6" y2="22" stroke="black" stroke-width="3.5" stroke-linecap="round"/></svg>`,
+  html: `<svg width="28" height="28" viewBox="0 0 28 28"><line x1="6" y1="6" x2="22" y2="22" stroke="white" stroke-width="3.5" stroke-linecap="round"/><line x1="22" y1="6" x2="6" y2="22" stroke="white" stroke-width="3.5" stroke-linecap="round"/></svg>`,
   iconSize: [28, 28],
   iconAnchor: [14, 14],
 })
@@ -45,7 +45,8 @@ export default function LightningMap({
   startLocal,
   endLocal,
   animating,
-  animFrameTime,
+  playbackTime,
+  accumulatedMode,
   onPlay,
   onPause,
   onStepBack,
@@ -57,11 +58,14 @@ export default function LightningMap({
   markerInterval,
   visMode,
 }) {
+  const now = new Date()
   const isSouthAmerica = taker && taker.id === 0
   const center = taker ? [taker.lat, taker.lon] : [-14.0, -52.0]
   const zoom = isSouthAmerica ? 4 : (taker ? 7 : 4)
 
   // Time range for coloring
+  const effectivePlaybackTime = (animating && playbackTime) ? playbackTime : now.getTime()
+  
   const timeRange = useMemo(() => {
     if (!events || events.length === 0) return { min: 0, max: 1 }
     const times = events.map((e) => new Date(e.eventTime).getTime())
@@ -70,12 +74,23 @@ export default function LightningMap({
     return { min, max: max === min ? max + 1 : max }
   }, [events])
 
+  const filteredEvents = useMemo(() => {
+    if (!animating || !playbackTime) return events
+    
+    const intervalMs = (markerInterval || 10) * 60000
+    return events.filter(ev => {
+      const evMs = new Date(ev.eventTime).getTime()
+      if (evMs > playbackTime) return false
+      if (!accumulatedMode && evMs < playbackTime - intervalMs) return false
+      return true
+    })
+  }, [events, animating, playbackTime, accumulatedMode, markerInterval])
+
   // ABI overlay: use props from useAbiOverlay hook
   // abiBounds comes from the hook (South America by default)
   const leafletAbiBounds = abiBounds || null
 
   // Format metadata
-  const now = new Date()
   const effectiveStart = startLocal
     ? new Date(startLocal)
     : new Date(now.getTime() - (initialLoadHours || 4) * 3600000)
@@ -84,9 +99,16 @@ export default function LightningMap({
     ? new Date(endLocal).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
     : 'Agora'
   const updateLabel = lastUpdateLocal || now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  
+  const nextUpdateDate = lastUpdateLocal 
+    ? new Date(new Date().setHours(Number(lastUpdateLocal.split(':')[0]), Number(lastUpdateLocal.split(':')[1]) + 5))
+    : new Date(now.getTime() + 5 * 60000)
+  const nextUpdateLabel = nextUpdateDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+
   const intervalLabel = initialLoadHours ? `${String(initialLoadHours).padStart(2, '0')}:00` : '04:00'
-  const clockLabel = animFrameTime
-    ? new Date(animFrameTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  
+  const clockLabel = (animating && playbackTime)
+    ? new Date(playbackTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
     : now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
 
   // Define South America bounds to prevent panning away
@@ -154,12 +176,14 @@ export default function LightningMap({
           ))}
 
         {/* Lightning events - Point Mode */}
-        {visMode === 'points' && events.map((ev) => {
+        {visMode === 'points' && filteredEvents.map((ev) => {
           const eventMs = new Date(ev.eventTime).getTime()
-          const ageMin = Math.max(0, (timeRange.max - eventMs) / 60000)
-          const step = Math.floor(ageMin / (markerInterval || 10))
-          const totalSteps = Math.max(1, (timeRange.max - timeRange.min) / (60000 * (markerInterval || 10)))
-          const t = Math.max(0, 1 - step / totalSteps)
+          const ageMin = Math.max(0, (effectivePlaybackTime - eventMs) / 60000)
+          
+          // Use jetColor based on age relative to a 60-minute window (or similar)
+          // Newest (0 min) -> t=1 (Yellow/Red), Oldest (60+ min) -> t=0 (Blue)
+          const maxAge = 60 
+          const t = Math.max(0, 1 - (ageMin / maxAge))
 
           return (
             <CircleMarker
@@ -181,8 +205,8 @@ export default function LightningMap({
           const grid = {};
           let maxCount = 0;
 
-          // Aggregate events into spatial cells
-          events.forEach(ev => {
+          // Aggregate filtered events into spatial cells
+          filteredEvents.forEach(ev => {
             const latIdx = Math.floor(ev.latitude / GRID_SIZE);
             const lonIdx = Math.floor(ev.longitude / GRID_SIZE);
             const key = `${latIdx},${lonIdx}`;
@@ -220,7 +244,7 @@ export default function LightningMap({
         <span>Última atualização: {updateLabel} BRT</span>
         <span>Hora Inicial: {startLabel} BRT</span>
         <span>Hora final: {endLabel === 'Agora' ? endLabel : endLabel + ' BRT'}</span>
-        <span>Intervalo: {intervalLabel}</span>
+        <span>Próxima atualização: {nextUpdateLabel} BRT</span>
         {backgroundIr && abiUtc && (
           <span className="lt-map-meta__abi">
             🛰 ABI: {new Date(abiUtc).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} UTC

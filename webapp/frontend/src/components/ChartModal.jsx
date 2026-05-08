@@ -39,6 +39,104 @@ export default function ChartModal({ isOpen, onClose, data, title }) {
     });
   }, [series, hourLabels, maxVal, chartWidth, chartHeight]);
 
+  const downloadPng = () => {
+    if (!svgRef.current) return;
+    try {
+      const svg = svgRef.current;
+      
+      // Clone SVG to modify colors for white background export
+      const clonedSvg = svg.cloneNode(true);
+      clonedSvg.setAttribute('width', width);
+      clonedSvg.setAttribute('height', height);
+      
+      // Update text and line colors for white background
+      const textElements = clonedSvg.querySelectorAll('text');
+      textElements.forEach(t => t.setAttribute('fill', '#333'));
+      
+      const gridLines = clonedSvg.querySelectorAll('line');
+      gridLines.forEach(l => l.setAttribute('stroke', '#ddd'));
+      
+      const rectBg = clonedSvg.querySelector('rect');
+      if (rectBg) rectBg.setAttribute('fill', '#ffffff');
+
+      // Adjust series colors for better contrast on white (Darker versions)
+      const EXPORT_COLORS = ['#d600d6', '#00acc1', '#fbc02d', '#2e7d32', '#c62828'];
+      const polylines = clonedSvg.querySelectorAll('polyline');
+      polylines.forEach((p, i) => {
+        p.setAttribute('stroke', EXPORT_COLORS[i % EXPORT_COLORS.length]);
+      });
+      
+      const legendRects = clonedSvg.querySelectorAll('g rect');
+      legendRects.forEach((r, i) => {
+        r.setAttribute('fill', EXPORT_COLORS[i % EXPORT_COLORS.length]);
+      });
+      
+      const legendTexts = clonedSvg.querySelectorAll('g text');
+      legendTexts.forEach(t => t.setAttribute('fill', '#444'));
+
+      const svgData = new XMLSerializer().serializeToString(clonedSvg);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      const logoImg = new Image();
+      
+      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+      
+      let imagesLoaded = 0;
+      const onImageLoad = () => {
+        imagesLoaded++;
+        if (imagesLoaded === 2) {
+          // High-DPI Scaling (3x)
+          const scale = 3;
+          canvas.width = width * scale;
+          canvas.height = height * scale;
+          
+          if (ctx) {
+            ctx.scale(scale, scale);
+            // White background
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, width, height);
+            
+            // Draw chart
+            ctx.drawImage(img, 0, 0, width, height);
+            
+            // Draw logo (top right) - Fix aspect ratio
+            const logoH = 45;
+            const logoW = (logoImg.naturalWidth / logoImg.naturalHeight) * logoH;
+            ctx.drawImage(logoImg, width - logoW - 25, 15, logoW, logoH);
+            
+            canvas.toBlob((blob) => {
+              if (!blob) return;
+              const downloadUrl = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+              a.download = `grafico_blueocean_hd_${ts}.png`;
+              a.href = downloadUrl;
+              a.click();
+              URL.revokeObjectURL(downloadUrl);
+            }, 'image/png', 1.0);
+          }
+          URL.revokeObjectURL(url);
+        }
+      };
+
+      img.onload = onImageLoad;
+      logoImg.onload = onImageLoad;
+      img.src = url;
+      logoImg.src = '/logo.png'; 
+    } catch (e) {
+      console.error('Erro ao baixar PNG:', e);
+    }
+  };
+
+  // Calculate X offset to center the legend
+  const legendXOffset = useMemo(() => {
+    const itemWidth = 140;
+    const totalLegendWidth = radiiLabels.length * itemWidth;
+    return (width - totalLegendWidth) / 2 + 10;
+  }, [radiiLabels, width]);
+
   if (!isOpen) return null;
 
   return (
@@ -48,7 +146,14 @@ export default function ChartModal({ isOpen, onClose, data, title }) {
           <div className="lt-modal__header-left">
             <h2 className="lt-modal__title">{title || 'Gráfico de Relâmpagos'}</h2>
           </div>
-          <button className="lt-modal__close" onClick={onClose}>✕</button>
+          <div className="lt-modal__header-actions">
+            {series.length > 0 && (
+              <button className="lt-download-btn" onClick={downloadPng}>
+                Baixar PNG
+              </button>
+            )}
+            <button className="lt-modal__close" onClick={onClose} style={{ marginLeft: 15 }}>✕</button>
+          </div>
         </div>
         
         <div className="lt-chart-content">
@@ -101,7 +206,7 @@ export default function ChartModal({ isOpen, onClose, data, title }) {
 
               {/* Legend inside SVG */}
               {radiiLabels.map((label, i) => {
-                const x = padding + i * 140;
+                const x = legendXOffset + i * 140;
                 const y = height - 25;
                 return (
                   <g key={i}>

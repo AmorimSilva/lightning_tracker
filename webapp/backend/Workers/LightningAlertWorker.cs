@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Mail;
+using System.Net.Http.Json;
+using System.Text.Json;
 using LightningTracker.WebApi.Data;
 using LightningTracker.WebApi.Services;
+using LightningTracker.WebApi.Models;
 
 namespace LightningTracker.WebApi.Workers;
 
@@ -10,9 +13,20 @@ public class LightningAlertWorker : BackgroundService
     private readonly ILogger<LightningAlertWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(2);
-    
-    // Memory cache to avoid spamming alerts (15min debounce per unit)
-    private readonly Dictionary<int, DateTime> _lastAlertSent = new();
+
+    private enum AlertLevel { None, Observing, Yellow, Red }
+
+    private class AlertSession
+    {
+        public AlertLevel CurrentLevel { get; set; } = AlertLevel.None;
+        public int MessagesSentInLevel { get; set; } = 0;
+        public DateTime InitialAlertTime { get; set; }
+        public DateTime LastUpdateTime { get; set; }
+        public DateTime LastLightningTime { get; set; }
+        public double ClosestDistance { get; set; }
+    }
+
+    private readonly Dictionary<int, AlertSession> _activeSessions = new();
 
     public LightningAlertWorker(ILogger<LightningAlertWorker> logger, IServiceProvider serviceProvider)
     {
@@ -32,7 +46,7 @@ public class LightningAlertWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro no motor de alerta.");
+                _logger.LogError(ex, "Sentinel: Erro crítico no motor de alerta.");
             }
 
             await Task.Delay(_checkInterval, stoppingToken);
@@ -45,199 +59,263 @@ public class LightningAlertWorker : BackgroundService
         var repo = scope.ServiceProvider.GetRequiredService<ServiceTakerRepository>();
         var dataService = scope.ServiceProvider.GetRequiredService<LightningDataService>();
         
-        // Hardcoded target: Porto Belém (ID usually depends on DB, but we fetch all and filter by name if needed)
         var takers = await repo.GetAllAsync(ct);
-        var targetTaker = takers.FirstOrDefault(t => t.Name.Contains("Porto Belém"));
+        var contacts = await LoadContactsAsync(ct);
+        if (contacts == null || !contacts.Any()) return;
 
-        if (targetTaker == null) return;
-
-        // Debounce: 10 minutes between alerts
-        if (_lastAlertSent.TryGetValue(targetTaker.Id, out var lastTime) && 
-            DateTime.UtcNow - lastTime < TimeSpan.FromMinutes(10))
+        foreach (var taker in takers)
         {
-            return;
-        }
+            var takerContacts = contacts.Where(c => c.UnitName.Equals(taker.Name, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (!takerContacts.Any()) continue;
 
-        // Check for lightning in last 5 minutes within 200km
-        var startUtc = DateTime.UtcNow.AddMinutes(-5);
-        var endUtc = DateTime.UtcNow;
-        
-        var events = await dataService.GetEventsAsync(targetTaker, startUtc, endUtc, 200.0, "flash", 100, ct);
-
-        if (events.Any())
-        {
-            _logger.LogInformation("Relâmpago detectado perto de {Name}! Calculando distâncias...", targetTaker.Name);
+            var now = DateTime.UtcNow;
+            // Increased range to 500km to capture 'Observing' events beyond 200km
+            var recentEvents = (await dataService.GetEventsAsync(taker, now.AddMinutes(-10), now, 500.0, "flash", 1000, ct)).ToList();
             
-            // Calculate counts per ring
-            int c30 = 0, c50 = 0, c100 = 0, c200 = 0;
-            foreach (var evt in events)
+            double minDistance = 999;
+            if (recentEvents.Any())
             {
-                var d = HaversineKm(targetTaker.Lat, targetTaker.Lon, evt.Latitude, evt.Longitude);
-                if (d <= 30) c30++;
-                else if (d <= 50) c50++;
-                else if (d <= 100) c100++;
-                else if (d <= 200) c200++;
+                minDistance = recentEvents.Min(e => HaversineKm(taker.Lat, taker.Lon, e.Latitude, e.Longitude));
             }
 
-            var countsStr = $@"
-🟠 Até 30km: {c30}
-🟡 Até 50km: {c50}
-🟢 Até 100km: {c100}
-🔵 Até 200km: {c200}"; 
-            
-            // Read contacts from JSON table
-            var contactsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "db/alert_contacts.json");
-            if (!File.Exists(contactsPath)) {
-                // Fallback to project root for dev
-                contactsPath = Path.Combine(Directory.GetCurrentDirectory(), "db/alert_contacts.json");
-            }
+            AlertLevel targetLevel = GetTargetLevel(minDistance);
 
-            if (File.Exists(contactsPath))
+            if (_activeSessions.TryGetValue(taker.Id, out var session))
             {
-                var json = await File.ReadAllTextAsync(contactsPath, ct);
-                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var contacts = System.Text.Json.JsonSerializer.Deserialize<List<AlertContact>>(json, options);
-                
-                if (contacts != null)
+                if (recentEvents.Any())
                 {
-                    foreach (var contact in contacts)
+                    session.LastLightningTime = now;
+                    session.ClosestDistance = minDistance;
+
+                    if (targetLevel > session.CurrentLevel)
                     {
-                        // Check if contact is subscribed to this unit
-                        if (targetTaker.Name.Contains(contact.Unit, StringComparison.OrdinalIgnoreCase))
+                        // Escalation
+                        session.CurrentLevel = targetLevel;
+                        session.MessagesSentInLevel = 0;
+                        await SendAlertToContactsAsync(taker, takerContacts, recentEvents, minDistance, targetLevel, true, ct);
+                        session.MessagesSentInLevel++;
+                        session.LastUpdateTime = now;
+                    }
+                    else
+                    {
+                        // Same level update (or de-escalation)
+                        double minutesSinceLastUpdate = (now - session.LastUpdateTime).TotalMinutes;
+                        bool shouldUpdate = ShouldUpdateByInterval(session.CurrentLevel, minDistance, minutesSinceLastUpdate);
+
+                        if (shouldUpdate)
                         {
-                            if (!string.IsNullOrWhiteSpace(contact.Email))
-                                await SendEmailAlert(targetTaker.Name, contact.Name, contact.Email, countsStr);
-                            
-                            if (!string.IsNullOrWhiteSpace(contact.Whatsapp))
-                                await SendWhatsAppAlert(targetTaker.Name, contact.Name, contact.Whatsapp, countsStr);
+                            await SendAlertToContactsAsync(taker, takerContacts, recentEvents, minDistance, session.CurrentLevel, session.MessagesSentInLevel == 0, ct);
+                            session.MessagesSentInLevel++;
+                            session.LastUpdateTime = now;
                         }
                     }
                 }
+                else 
+                {
+                    // No recent lightning. Check for 20 minutes inactivity
+                    if ((now - session.LastLightningTime).TotalMinutes >= 20)
+                    {
+                        _logger.LogInformation("Sentinel: Enviando encerramento para {Name} por inatividade.", taker.Name);
+                        await SendAlertToContactsAsync(taker, takerContacts, new List<LightningEvent>(), 0, AlertLevel.None, true, ct);
+                        _activeSessions.Remove(taker.Id);
+                    }
+                }
             }
-            
-            _lastAlertSent[targetTaker.Id] = DateTime.UtcNow;
+            else if (recentEvents.Any())
+            {
+                // New alert session
+                _logger.LogInformation("Sentinel: NOVO MONITORAMENTO para {Name}", taker.Name);
+                
+                var newSession = new AlertSession { 
+                    InitialAlertTime = now, 
+                    LastUpdateTime = now, 
+                    LastLightningTime = now,
+                    ClosestDistance = minDistance
+                };
+
+                if (targetLevel == AlertLevel.Red)
+                {
+                    // Exception: Immediate Red
+                    await SendAlertToContactsAsync(taker, takerContacts, recentEvents, minDistance, AlertLevel.Observing, true, ct);
+                    await Task.Delay(2000, ct); 
+                    await SendAlertToContactsAsync(taker, takerContacts, recentEvents, minDistance, AlertLevel.Red, true, ct);
+                    newSession.CurrentLevel = AlertLevel.Red;
+                    newSession.MessagesSentInLevel = 1;
+                }
+                else 
+                {
+                    await SendAlertToContactsAsync(taker, takerContacts, recentEvents, minDistance, AlertLevel.Observing, true, ct);
+                    newSession.CurrentLevel = AlertLevel.Observing;
+                    newSession.MessagesSentInLevel = 1;
+                }
+
+                _activeSessions[taker.Id] = newSession;
+            }
         }
     }
 
+    private AlertLevel GetTargetLevel(double distance)
+    {
+        if (distance <= 100) return AlertLevel.Red;
+        if (distance <= 200) return AlertLevel.Yellow;
+        if (distance <= 500) return AlertLevel.Observing;
+        return AlertLevel.None;
+    }
+
+    private bool ShouldUpdateByInterval(AlertLevel level, double minDistance, double minutesSinceUpdate)
+    {
+        if (level == AlertLevel.Red || minDistance <= 100) return true; // Real-time
+        if (level == AlertLevel.Yellow || minDistance <= 200) return minutesSinceUpdate >= 20;
+        return minutesSinceUpdate >= 60; // Observing updates
+    }
+
+    private async Task<List<AlertContact>?> LoadContactsAsync(CancellationToken ct)
+    {
+        var contactsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "db/alert_contacts.json");
+        if (!File.Exists(contactsPath)) contactsPath = Path.Combine(Directory.GetCurrentDirectory(), "db/alert_contacts.json");
+        if (!File.Exists(contactsPath)) return null;
+
+        var json = await File.ReadAllTextAsync(contactsPath, ct);
+        return JsonSerializer.Deserialize<List<AlertContact>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+
+    private async Task SendAlertToContactsAsync(ServiceTaker taker, List<AlertContact> contacts, List<LightningEvent> events, double minDistance, AlertLevel level, bool showPrediction, CancellationToken ct)
+    {
+        int c30 = 0, c50 = 0, c100 = 0, c200 = 0;
+        foreach (var evt in events)
+        {
+            var d = HaversineKm(taker.Lat, taker.Lon, evt.Latitude, evt.Longitude);
+            if (d <= 30) c30++;
+            else if (d <= 50) c50++;
+            else if (d <= 100) c100++;
+            else if (d <= 200) c200++;
+        }
+        string countsSummary = $"\n🟠 Até 30km: {c30} \n🟡 Até 50km: {c50} \n🟢 Até 100km: {c100} \n🔵 Até 200km: {c200}";
+
+        foreach (var contact in contacts)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(contact.Phone))
+                    await SendWhatsAppAsync(contact, taker.Name, events.Count, minDistance, countsSummary, level, showPrediction);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao enviar alerta para {Contact}", contact.Name);
+            }
+        }
+    }
+
+    private async Task SendWhatsAppAsync(AlertContact contact, string unitName, int count, double minDistance, string countsSummary, AlertLevel level, bool showPrediction)
+    {
+        var instanceId = "3F2C681BEBCAF1933F5DEAAA29470FA9"; 
+        var instanceToken = "6D478E447558779AE85FEEF8";
+        var clientToken = "F69b60f2b6f024139a33e5d911459bc38S";
+
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Add("client-token", clientToken);
+
+        var cleanPhone = new string(contact.Phone.Where(char.IsDigit).ToArray());
+        if (!cleanPhone.StartsWith("55")) cleanPhone = "55" + cleanPhone;
+
+        string messageText = level switch {
+            AlertLevel.Observing => GetObservingTemplate(contact.Name, unitName),
+            AlertLevel.Yellow => GetYellowTemplate(contact.Name, unitName, count, minDistance, countsSummary, showPrediction),
+            AlertLevel.Red => GetRedTemplate(contact.Name, unitName, count, minDistance, countsSummary, showPrediction),
+            AlertLevel.None => GetGreenTemplate(contact.Name, unitName),
+            _ => ""
+        };
+
+        var payload = new { phone = cleanPhone, message = messageText };
+        var url = $"https://api.z-api.io/instances/{instanceId}/token/{instanceToken}/send-text";
+        
+        var response = await httpClient.PostAsJsonAsync(url, payload);
+        if (response.IsSuccessStatusCode)
+            _logger.LogInformation("WhatsApp {Level} enviado para {Phone}.", level, contact.Phone);
+        else
+            _logger.LogError("Erro Z-API ({Code}): {Msg}", response.StatusCode, await response.Content.ReadAsStringAsync());
+    }
+
+    private string GetObservingTemplate(string contactName, string unitName)
+    {
+        return $@"⚠️ *SENTINEL BLUEOCEAN* ⚠️
+
+Olá {contactName}! Sou o *Sentinel*, sistema de monitoramento da BLUEOCEAN.
+
+Estamos observando uma intensificação de tempestade na região da unidade: *{unitName}*.
+
+Nossa equipe está em vigilância. Caso o tempo mude ou a atividade se aproxime, enviaremos novos alertas imediatamente.
+
+📍 Acompanhe ao vivo: http://nowcast.blueocean.com";
+    }
+
+    private string GetYellowTemplate(string contactName, string unitName, int count, double minDistance, string countsSummary, bool showPrediction)
+    {
+        string statusText = showPrediction 
+            ? "\n\n💡 *Previsão:* Existe a probabilidade de ocorrência de relâmpagos em *30 minutos* na região."
+            : "\n\n💡 *Status:* O alerta amarelo irá se manter por mais *30 minutos*, exceto que mude para alerta vermelho.";
+        
+        return $@"🟡 *ALERTA AMARELO*
+
+Olá {contactName}! 
+**Foram detectados raios a {minDistance:F1} km de distância da unidade {unitName}.**
+
+📊 *Informações de proximidade:* {countsSummary}
+
+⛈️ *Total de raios:* {count}
+📍 *Raio mais próximo:* {minDistance:F1} km{statusText}
+
+📍 Veja no mapa: http://nowcast.blueocean.com
+
+Continuaremos enviando atualizações conforme a proximidade dos eventos.";
+    }
+
+    private string GetRedTemplate(string contactName, string unitName, int count, double minDistance, string countsSummary, bool showPrediction)
+    {
+        string prediction = showPrediction ? "\n\n💡 *Previsão:* Existe a probabilidade de ocorrência de relâmpagos em *15 minutos*." : "";
+
+        return $@"🔴 *ALERTA VERMELHO*
+
+Olá {contactName}! 
+**Foram detectados raios a {minDistance:F1} km de distância da unidade {unitName}.**
+
+📊 *Informações de proximidade:* {countsSummary}
+
+⛈️ *Total de raios:* {count}
+📍 *Raio mais próximo:* {minDistance:F1} km{prediction}
+
+📍 Veja no mapa: http://nowcast.blueocean.com
+
+*ATENÇÃO:* Procure abrigo seguro e evite áreas abertas.";
+    }
+
+    private string GetGreenTemplate(string contactName, string unitName)
+    {
+        return $@"✅ *ALERTA VERDE - BLUEOCEAN* ✅
+
+Condições normalizadas. Sem registro de relâmpagos na última hora para as proximidades da unidade *{unitName}*.";
+    }
+
+
     private static double HaversineKm(double lat1, double lon1, double lat2, double lon2)
     {
-        var dLat = (lat2 - lat1) * Math.PI / 180.0;
-        var dLon = (lon2 - lon1) * Math.PI / 180.0;
+        var R = 6371;
+        var dLat = (lat2 - lat1) * Math.PI / 180;
+        var dLon = (lon2 - lon1) * Math.PI / 180;
         var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
-                Math.Cos(lat1 * Math.PI / 180.0) * Math.Cos(lat2 * Math.PI / 180.0) *
+                Math.Cos(lat1 * Math.PI / 180) * Math.Cos(lat2 * Math.PI / 180) *
                 Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
         var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
-        return 6371.0 * c;
+        return R * c;
     }
 
     private class AlertContact
     {
         public string Name { get; set; } = "";
-        public string Unit { get; set; } = "";
+        public string UnitName { get; set; } = "";
         public string Email { get; set; } = "";
-        public string Whatsapp { get; set; } = "";
-    }
-
-    private async Task SendWhatsAppAlert(string unitName, string contactName, string phoneNumber, string countsSummary)
-    {
-        if (string.IsNullOrWhiteSpace(phoneNumber)) return;
-        try
-        {
-            // CONFIGURAÇÃO Z-API
-            var instanceId = "3F2C681BEBCAF1933F5DEAAA29470FA9"; 
-            var instanceToken = "6D478E447558779AE85FEEF8";
-            var clientToken = "F69b60f2b6f024139a33e5d911459bc38S";
-            
-            using var client = new HttpClient();
-            client.DefaultRequestHeaders.Add("client-token", clientToken);
-
-            // 1. Verificar Status da Instância
-            var statusUrl = $"https://api.z-api.io/instances/{instanceId}/token/{instanceToken}/status";
-            var statusRes = await client.GetAsync(statusUrl);
-            var statusJson = await statusRes.Content.ReadAsStringAsync();
-            _logger.LogInformation("STATUS Z-API: {Status}", statusJson);
-
-            // 2. Enviar Mensagem
-            var url = $"https://api.z-api.io/instances/{instanceId}/token/{instanceToken}/send-text";
-            
-            // Clean phone number
-            var cleanPhone = new string(phoneNumber.Where(char.IsDigit).ToArray());
-            if (!cleanPhone.StartsWith("55")) cleanPhone = "55" + cleanPhone;
-
-            var payload = new
-            {
-                phone = cleanPhone,
-                message = $@"⚠️ *ALERTA BLUEOCEAN* ⚠️
-
-Olá {contactName}! Me chamo Sentinel, sou o alerta automático.
-
-Há relâmpagos detectados perto da unidade: *{unitName}*.
-
-📊 *Resumo de proximidade (últimos 5 min):*{countsSummary}
-
-📍 Acompanhe agora: http://nowcast.oceanblue.com
-Entraremos em contato com mais atualizações."
-            };
-
-            var response = await client.PostAsJsonAsync(url, payload);
-            var resultBody = await response.Content.ReadAsStringAsync();
-            
-            if (response.IsSuccessStatusCode)
-                _logger.LogInformation("WHATSAPP ENVIADO! Resposta: {Body}", resultBody);
-            else
-                _logger.LogError("FALHA WHATSAPP: {Code} - {Msg}", response.StatusCode, resultBody);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Erro ao disparar WhatsApp via Z-API.");
-        }
-    }
-
-    private async Task SendEmailAlert(string unitName, string contactName, string email, string countsSummary)
-    {
-        if (string.IsNullOrWhiteSpace(email)) return;
-        try
-        {
-            // CONFIGURAÇÃO DO REMETENTE (Quem vai enviar o e-mail)
-            var smtpHost = "smtp.office365.com";         // Servidor Office 365 / Microsoft
-            var smtpPort = 587;                          // Porta para STARTTLS
-            var smtpUser = "samuel.amorim@BRBlueocean.com"; // Seu e-mail corporativo
-//            var smtpPass = "P&593209307730ay";           // Senha de Aplicativo ou senha da conta
-
-            using var client = new SmtpClient(smtpHost, smtpPort)
-            {
-                Credentials = new NetworkCredential(smtpUser, smtpPass),
-                EnableSsl = true
-            };
-
-            var message = new MailMessage
-            {
-                From = new MailAddress(smtpUser, "BlueOcean Alerta"),
-                Subject = $"⚠️ ALERTA: Relâmpagos em {unitName}",
-                Body = $@"Olá {contactName}! 
-
-Sou o alerta automático da BLUOCEAN! 
-Há relâmpagos detectados perto da sua unidade de serviço: {unitName}. 
-
-Resumo de proximidade (últimos 5 min):
-{countsSummary}
-
-Acompanhe em tempo real em: http://nowcast.oceanblue.com
-Entraremos em contato para mais atualizações.
-
-Atenciosamente,
-Sistema Sentinel BlueOcean",
-                IsBodyHtml = false
-            };
-
-            message.To.Add(email);
-            
-            await client.SendMailAsync(message);
-            _logger.LogInformation("E-MAIL ENVIADO COM SUCESSO para {Email}.", email);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Falha ao enviar e-mail de alerta.");
-        }
+        public string Phone { get; set; } = "";
     }
 }
+
+

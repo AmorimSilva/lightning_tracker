@@ -61,7 +61,7 @@ public static class LightningTrackerEndpoints
             // takerId <= 0 means "América do Sul" — fetch all events without spatial filter
             if (takerId <= 0)
             {
-                var allEvents = await dataService.GetAllEventsAsync(startUtc, endUtc, kind, 30000, ct);
+                var allEvents = await dataService.GetAllEventsAsync(startUtc, endUtc, kind, 1000000, ct);
                 return Results.Json(allEvents);
             }
 
@@ -70,7 +70,7 @@ public static class LightningTrackerEndpoints
                 return Results.NotFound(new { message = "Tomador não encontrado" });
 
             // Fetch events near the taker (250km radius)
-            var events = await dataService.GetEventsAsync(taker, startUtc, endUtc, 250.0, kind, 30000, ct);
+            var events = await dataService.GetEventsAsync(taker, startUtc, endUtc, 250.0, kind, 1000000, ct);
             return Results.Json(events);
         });
 
@@ -178,6 +178,9 @@ public static class LightningTrackerEndpoints
                 safeRequest = safeRequest with { InitialLoadHours = 3 };
             }
 
+            var safeBinMinutes = GetIntQuery(request, "binMinutes", 30);
+            var safeShowPolygon = GetIntQuery(request, "showPolygon", 1) != 0;
+
             var renderResult = await renderer.RenderAsync(
                 taker,
                 safeRequest.Mode,
@@ -185,6 +188,9 @@ public static class LightningTrackerEndpoints
                 safeRequest.EndLocal,
                 safeRequest.InitialLoadHours,
                 safeRequest.Background,
+                false,
+                safeBinMinutes,
+                safeShowPolygon,
                 false,
                 ct
             );
@@ -196,6 +202,42 @@ public static class LightningTrackerEndpoints
                 SetResponseHeader(response, header.Key, header.Value);
 
             return Results.File(png, "image/png");
+        });
+
+        app.MapGet("/api/render/animation", async (
+            HttpRequest request,
+            ServiceTakerRepository repo,
+            PythonRenderService renderer,
+            HttpResponse response,
+            CancellationToken ct
+        ) =>
+        {
+            var takerId = GetIntQuery(request, "takerId");
+            var mode = GetIntQuery(request, "mode");
+            var startLocal = GetStringQuery(request, "startLocal");
+            var endLocal = GetStringQuery(request, "endLocal");
+            var binMinutes = GetIntQuery(request, "binMinutes", 10);
+            var showPolygon = GetIntQuery(request, "showPolygon", 0) != 0;
+
+            var taker = await repo.GetByIdAsync(takerId, ct);
+            if (taker is null)
+                return Results.NotFound(new { message = "Tomador não encontrado" });
+
+            var renderResult = await renderer.RenderAsync(
+                taker,
+                mode,
+                startLocal,
+                endLocal,
+                0,
+                0, // Background? maybe too slow for animation
+                false,
+                binMinutes,
+                showPolygon,
+                true, // animate = true
+                ct
+            );
+
+            return Results.File(renderResult.Png, "video/mp4", $"animation_{takerId}.mp4");
         });
 
         app.MapGet("/api/render/frame", async (
@@ -213,6 +255,9 @@ public static class LightningTrackerEndpoints
             var safeInitialLoadHours = GetIntQuery(request, "initialLoadHours", 0);
             var safeBackground = GetIntQuery(request, "background", 0);
             var safeThumb = GetIntQuery(request, "thumb", 0);
+
+            var safeBinMinutes = GetIntQuery(request, "binMinutes", 30);
+            var safeShowPolygon = GetIntQuery(request, "showPolygon", 1) != 0;
 
             var taker = await repo.GetByIdAsync(takerId, ct);
             if (taker is null)
@@ -240,6 +285,9 @@ public static class LightningTrackerEndpoints
                 safeRequest.InitialLoadHours,
                 safeRequest.Background,
                 safeThumb != 0,
+                safeBinMinutes,
+                safeShowPolygon,
+                false,
                 ct
             );
 

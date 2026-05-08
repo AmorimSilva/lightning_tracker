@@ -50,7 +50,7 @@ public class PythonAbiService
 
         // Independent 90-second timeout for the Python process
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(90));
+        cts.CancelAfter(TimeSpan.FromSeconds(180));
 
         await _lock.WaitAsync(cts.Token);
         try

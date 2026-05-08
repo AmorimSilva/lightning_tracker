@@ -32,7 +32,7 @@ public class LightningDataService
         DateTime endUtc,
         double maxRadiusKm,
         string kind, // "flash" or "event"
-        int maxPoints = 30000,
+        int maxPoints = 1000000,
         CancellationToken ct = default)
     {
         var dsn = _config.GetPostgresDsn();
@@ -133,7 +133,7 @@ public class LightningDataService
         DateTime startUtc,
         DateTime endUtc,
         string kind,
-        int maxPoints = 30000,
+        int maxPoints = 1000000,
         CancellationToken ct = default)
     {
         var dsn = _config.GetPostgresDsn();

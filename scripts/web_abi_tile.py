@@ -276,12 +276,13 @@ def main() -> int:
         return 1
 
     file_time, key = found
-    sys.stderr.write(f"ABI key: {key}  time: {file_time.isoformat()}\n")
+    sys.stderr.write(f"ABI found key: {key} for time {file_time.isoformat()}\n")
 
     try:
         nc_path = provider._download_key(key)
+        sys.stderr.write(f"ABI download success: {nc_path}\n")
     except Exception as e:
-        sys.stderr.write(f"Download failed: {e}\n")
+        sys.stderr.write(f"ABI download failed: {e}\n")
         return 1
 
     # ---------------------------------------------------------------------------
@@ -373,7 +374,7 @@ def main() -> int:
 
             # Mask bad CMI values
             cmi_sub[~np.isfinite(cmi_sub)] = np.nan
-            cmi_sub[(cmi_sub < 80.0) | (cmi_sub > 500.0)] = np.nan
+            cmi_sub[(cmi_sub < 50.0) | (cmi_sub > 550.0)] = np.nan
 
             # Flatten valid
             flat_lat = lat_deg[valid].ravel()

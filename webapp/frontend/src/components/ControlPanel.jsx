@@ -32,6 +32,10 @@ export default function ControlPanel({
   onShowMapChange,
   showRings,
   onShowRingsChange,
+  accumulatedMode,
+  onAccumulatedModeChange,
+  onReset,
+  animating,
 }) {
   const selectedTaker = takers.find((t) => String(t.id) === String(takerId))
 
@@ -107,7 +111,7 @@ export default function ControlPanel({
             onChange={(e) => onEndLocalChange(e.target.value)}
           />
         ) : (
-          <div className="lt-ctrl__live-badge" onClick={() => onEndLocalChange('')}>
+          <div className="lt-ctrl__live-badge" onClick={onReset} title="Clique para voltar ao tempo real">
             Ao Vivo
           </div>
         )}
@@ -126,17 +130,19 @@ export default function ControlPanel({
           </span>
         </label>
 
-        <label className="lt-ctrl__toggle">
-          <span>Ativar Mapa</span>
-          <input
-            type="checkbox"
-            checked={showMap}
-            onChange={(e) => onShowMapChange(e.target.checked)}
-          />
-          <span className={`lt-ctrl__check ${showMap ? 'lt-ctrl__check--on' : ''}`}>
-            {showMap ? '✓' : ''}
-          </span>
-        </label>
+        {animating && (
+          <label className="lt-ctrl__toggle">
+            <span>Modo Acumulado</span>
+            <input
+              type="checkbox"
+              checked={accumulatedMode}
+              onChange={(e) => onAccumulatedModeChange(e.target.checked)}
+            />
+            <span className={`lt-ctrl__check ${accumulatedMode ? 'lt-ctrl__check--on' : ''}`}>
+              {accumulatedMode ? '✓' : ''}
+            </span>
+          </label>
+        )}
 
         <label className="lt-ctrl__toggle">
           <span>Raios de Alcance</span>
@@ -150,6 +156,10 @@ export default function ControlPanel({
           </span>
         </label>
       </div>
+
+      <button className="lt-ctrl__reset-btn" onClick={onReset}>
+        Voltar às Configurações Iniciais
+      </button>
     </div>
   )
 }
