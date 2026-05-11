@@ -12,7 +12,7 @@ public class LightningAlertWorker : BackgroundService
 {
     private readonly ILogger<LightningAlertWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
-    private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(5);
+    private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(2);
 
     private enum AlertLevel { None, Observing, Yellow, Red }
 
@@ -74,6 +74,19 @@ public class LightningAlertWorker : BackgroundService
                 if (impact.EtaMinutes <= 15) targetLevel = AlertLevel.Red;
                 else if (impact.EtaMinutes <= 30) targetLevel = AlertLevel.Yellow;
                 else targetLevel = AlertLevel.Observing;
+            }
+
+            // FALLBACK: If no nowcast impact, check current lightning proximity (last 10 mins)
+            if (targetLevel == AlertLevel.None)
+            {
+                var recentEvents = await dataService.GetEventsAsync(taker, DateTime.UtcNow.AddMinutes(-10), DateTime.UtcNow, 500.0, "flash", 500, ct);
+                if (recentEvents.Any())
+                {
+                    var minDist = recentEvents.Min(e => HaversineKm(taker.Lat, taker.Lon, e.Latitude, e.Longitude));
+                    if (minDist <= 100) targetLevel = AlertLevel.Red;
+                    else if (minDist <= 200) targetLevel = AlertLevel.Yellow;
+                    else if (minDist <= 500) targetLevel = AlertLevel.Observing;
+                }
             }
 
             if (targetLevel == AlertLevel.None) 
