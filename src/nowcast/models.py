@@ -52,6 +52,7 @@ class CellTrack:
     status: str = "new"                  # 'new' | 'active' | 'dissipating'
     confidence: float = 0.0              # 0.0–1.0
     missed_frames: int = 0               # Frames without a match
+    area_trend_km2_min: float = 0.0      # Area growth/decay rate
 
 
 @dataclass

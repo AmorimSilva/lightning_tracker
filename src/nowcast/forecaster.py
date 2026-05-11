@@ -126,6 +126,11 @@ def calculate_eta(
             cell.centroid_lat, cell.centroid_lon,
             track.velocity_kmh, track.bearing_deg, hours,
         )
+        
+        # Account for area growth/decay in impact check (Radius evolution)
+        proj_area = max(1.0, cell.area_km2 + track.area_trend_km2_min * minutes)
+        cell_radius_km = math.sqrt(proj_area / math.pi)
+        
         proj_dist = haversine_km_scalar(proj_lat, proj_lon, taker.lat, taker.lon)
         effective_dist = proj_dist - cell_radius_km
 

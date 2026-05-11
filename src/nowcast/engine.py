@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-FRAME_WINDOW_SEC = 300        # 5-minute frames
-NUM_FRAMES = 6                # Analyse last 30 minutes (6 × 5min)
+FRAME_WINDOW_SEC = 300        # 5-minute window for each frame
+FRAME_STEP_SEC = 60           # 1-minute step between frames (sliding window)
 LOOKBACK_MINUTES = 30         # Total lookback window
 EPS_KM = 35.0
 MIN_SAMPLES = 5
@@ -169,20 +169,26 @@ def run_nowcast_cycle(
         now_utc = datetime.now(timezone.utc)
 
     start_utc = now_utc - timedelta(minutes=LOOKBACK_MINUTES)
-
-    logger.info("Nowcast cycle: %s → %s", start_utc.isoformat(), now_utc.isoformat())
-
-    # 1. Load events
     events = _load_events_from_postgres(dsn, start_utc, now_utc, kind="flash")
     if not events:
         logger.warning("No flash events in the last %d minutes", LOOKBACK_MINUTES)
         return NowcastReport(generated_at_utc=now_utc, frame_count=0)
 
+    # ALIGNMENT: Adjust 'now_utc' to the last event time to handle satellite lag.
+    # Otherwise, the last frames would be empty and tracks would "dissipate" before being reported.
+    last_event_time = max(e["event_time"] for e in events)
+    analysis_now = last_event_time
+    
+    logger.info("Nowcast cycle: %s → %s (Data lag: %s)", 
+                start_utc.isoformat(), analysis_now.isoformat(), 
+                now_utc - analysis_now)
+
     logger.info("Loaded %d flash events", len(events))
 
-    # 2. Build time frames
-    frames = _build_frames(events, now_utc, NUM_FRAMES, FRAME_WINDOW_SEC)
-    logger.info("Built %d frames", len(frames))
+    # 2. Build time frames (sliding window) working backwards from analysis_now
+    num_frames = int((LOOKBACK_MINUTES * 60 - FRAME_WINDOW_SEC) / FRAME_STEP_SEC) + 1
+    frames = _build_frames(events, analysis_now, num_frames, FRAME_WINDOW_SEC, FRAME_STEP_SEC)
+    logger.info("Built %d frames (sliding window step=%ds)", len(frames), FRAME_STEP_SEC)
 
     # 3. Detect cells in each frame and track across frames
     tracker = CellTracker(max_match_km=80.0)
@@ -232,8 +238,9 @@ def _build_frames(
     now_utc: datetime,
     num_frames: int,
     window_sec: int,
+    step_sec: int = 60,
 ) -> list[tuple[datetime, list[dict]]]:
-    """Split events into fixed-width time frames working backwards from now.
+    """Split events into overlapping time frames (sliding window).
 
     Returns list of (frame_center_time, events_in_frame) newest-last.
     """
@@ -241,7 +248,10 @@ def _build_frames(
     frames: list[tuple[datetime, list[dict]]] = []
 
     for i in range(num_frames, 0, -1):
-        frame_end = now_utc - timedelta(seconds=(i - 1) * window_sec)
+        # i=1 is the most recent window: [now - window, now]
+        # i=2 is [now - window - step, now - step]
+        offset = (i - 1) * step_sec
+        frame_end = now_utc - timedelta(seconds=offset)
         frame_start = frame_end - timedelta(seconds=window_sec)
         frame_center = frame_start + timedelta(seconds=window_sec / 2)
 

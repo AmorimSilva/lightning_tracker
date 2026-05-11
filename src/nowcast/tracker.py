@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 MAX_MATCH_DISTANCE_KM = 80.0   # Maximum allowed centroid displacement between frames
 MIN_TRACK_LENGTH = 2            # Minimum cells to compute a vector
 MAX_MISSED_FRAMES = 2           # How many missed frames before dissipation
-EMA_ALPHA = 0.5                 # Exponential moving average weight for smoothing
+EMA_ALPHA = 0.3                 # Lower alpha for smoother velocity smoothing
 
 
 class CellTracker:
@@ -128,7 +128,9 @@ class CellTracker:
     # -----------------------------------------------------------------
 
     def _build_cost_matrix(self, tracks: list[CellTrack], cells: list[StormCell]) -> np.ndarray:
-        """Build an (M, N) cost matrix where cost = haversine distance between last track centroid and cell centroid."""
+        """Build an (M, N) cost matrix where cost is based on distance and area overlap."""
+
+        import shapely.geometry
 
         m = len(tracks)
         n = len(cells)
@@ -136,11 +138,32 @@ class CellTracker:
 
         for i, track in enumerate(tracks):
             last = track.cells[-1]
+            # Build previous hull polygon
+            p1 = None
+            if len(last.hull_lat) >= 3:
+                p1 = shapely.geometry.Polygon(zip(last.hull_lon, last.hull_lat))
+
             for j, cell in enumerate(cells):
-                cost[i, j] = haversine_km_scalar(
+                dist = haversine_km_scalar(
                     last.centroid_lat, last.centroid_lon,
                     cell.centroid_lat, cell.centroid_lon,
                 )
+
+                # Overlap logic (ForTraCC style)
+                overlap_bonus = 1.0
+                if p1 and len(cell.hull_lat) >= 3:
+                    try:
+                        p2 = shapely.geometry.Polygon(zip(cell.hull_lon, cell.hull_lat))
+                        if p1.intersects(p2):
+                            intersection = p1.intersection(p2).area
+                            union = p1.union(p2).area
+                            overlap_ratio = intersection / union if union > 0 else 0
+                            # Significant overlap reduces cost (improves matching)
+                            overlap_bonus = 1.0 + (overlap_ratio * 5.0)
+                    except Exception:
+                        pass
+
+                cost[i, j] = dist / overlap_bonus
 
         return cost
 
@@ -199,9 +222,17 @@ class CellTracker:
             )
             recent_bearings = [s.bearing_deg for s in track.velocity_history[-3:]]
             track.bearing_deg = round(circular_mean(recent_bearings), 1)
+            
+            # Area trend smoothing
+            area_diff = cell.area_km2 - prev.area_km2
+            raw_area_trend = area_diff / (dt_hours * 60.0) # km2 per minute
+            track.area_trend_km2_min = round(
+                alpha * raw_area_trend + (1 - alpha) * track.area_trend_km2_min, 2
+            )
         else:
             track.velocity_kmh = round(raw_velocity, 1)
             track.bearing_deg = round(raw_bearing, 1)
+            track.area_trend_km2_min = 0.0
 
         # Calculate confidence
         track.confidence = self._calculate_track_confidence(track)

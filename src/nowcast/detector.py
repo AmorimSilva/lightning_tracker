@@ -119,10 +119,27 @@ def detect_cells(
         bbox = (float(np.min(clat)), float(np.min(clon)),
                 float(np.max(clat)), float(np.max(clon)))
 
-        # Convex hull
-        hull_pts = _convex_hull_2d(np.column_stack([clon, clat]))  # (lon, lat) for hull
-        hull_lat = hull_pts[:, 1].tolist() if len(hull_pts) > 0 else []
-        hull_lon = hull_pts[:, 0].tolist() if len(hull_pts) > 0 else []
+        # Geometry (Concave Hull via Shapely)
+        import shapely.geometry
+        from shapely import concave_hull
+
+        points = [shapely.geometry.Point(lon, lat) for lon, lat in zip(clon, clat)]
+        multipoint = shapely.geometry.MultiPoint(points)
+        
+        # Concave hull with ratio 0.15 (tighter than convex, but stable)
+        # Ratio 0.0 is convex hull, 1.0 is minimal concave hull.
+        hull = concave_hull(multipoint, ratio=0.15)
+        
+        if isinstance(hull, shapely.geometry.Polygon):
+            hull_lon, hull_lat = hull.exterior.xy
+            hull_lon = hull_lon.tolist()
+            hull_lat = hull_lat.tolist()
+        elif isinstance(hull, shapely.geometry.MultiPoint):
+             hull_lon = [p.x for p in hull.geoms]
+             hull_lat = [p.y for p in hull.geoms]
+        else:
+             hull_lon = []
+             hull_lat = []
 
         # Area from hull
         area = 0.0
