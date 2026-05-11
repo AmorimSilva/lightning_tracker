@@ -147,7 +147,7 @@ def main() -> int:
         start_utc = now_utc - timedelta(minutes=refresh_minutes)
     else:
         # Incremental: small overlap to be safe
-        overlap = int(getattr(settings, "fetch_overlap_seconds", 10))
+        overlap = int(getattr(settings, "fetch_overlap_seconds", 30))
         start_utc = last_fetched - timedelta(seconds=overlap)
         
         # CAP: Never look back more than 1 hour in incremental mode to avoid infinite catch-up
@@ -177,6 +177,8 @@ def main() -> int:
                 already, flashes_count, events_count = _ingest_file(conn, path, logger, settings.aws_bucket)
                 if not already:
                     logger.info("Ingested %s: %d flashes, %d events", path.name, flashes_count, events_count)
+                    # Force stdout flush for backend to pick up progress
+                    print(f"Synced {path.name}: {flashes_count} flashes", flush=True)
                     try:
                         st = _parse_source_time(path.name)
                         if st is None:

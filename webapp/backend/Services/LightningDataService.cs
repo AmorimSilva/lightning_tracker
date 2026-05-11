@@ -26,6 +26,32 @@ public class LightningDataService
         return 6371.0 * c;
     }
 
+    private string? GetNpgsqlConnectionString()
+    {
+        var dsn = _config.GetPostgresDsn();
+        if (string.IsNullOrWhiteSpace(dsn)) return null;
+
+        var parts = dsn.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var npgsqlDsn = string.Join(";", parts.Select(p =>
+        {
+            var pair = p.Split('=', 2);
+            if (pair.Length != 2) return p;
+            var key = pair[0].ToLowerInvariant();
+            var val = pair[1];
+            if (key == "dbname") key = "Database";
+            else if (key == "user") key = "Username";
+            return $"{key}={val}";
+        }));
+
+        // Append timeouts to prevent "Timeout during reading attempt"
+        if (!npgsqlDsn.Contains("Timeout=", StringComparison.OrdinalIgnoreCase))
+            npgsqlDsn += ";Timeout=60";
+        if (!npgsqlDsn.Contains("CommandTimeout=", StringComparison.OrdinalIgnoreCase))
+            npgsqlDsn += ";CommandTimeout=60";
+        
+        return npgsqlDsn;
+    }
+
     public async Task<List<LightningEvent>> GetEventsAsync(
         ServiceTaker taker,
         DateTime startUtc,
@@ -35,25 +61,12 @@ public class LightningDataService
         int maxPoints = 1000000,
         CancellationToken ct = default)
     {
-        var dsn = _config.GetPostgresDsn();
-        if (string.IsNullOrWhiteSpace(dsn))
+        var npgsqlDsn = GetNpgsqlConnectionString();
+        if (npgsqlDsn == null)
         {
             _logger.LogWarning("LIGHTNING_TRACKER_PG_DSN is not configured. Falling back to empty event list.");
             return new List<LightningEvent>();
         }
-
-        // Convert libpq DSN (host=... port=...) to Npgsql connection string
-        var parts = dsn.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var npgsqlDsn = string.Join(";", parts.Select(p => 
-        {
-            var pair = p.Split('=', 2);
-            if (pair.Length != 2) return p;
-            var key = pair[0].ToLowerInvariant();
-            var val = pair[1];
-            if (key == "dbname") key = "Database";
-            else if (key == "user") key = "Username";
-            return $"{key}={val}";
-        })) + ";Timeout=30;CommandTimeout=30;";
 
         _logger.LogInformation("Buscando eventos para taker {TakerName} (ID {TakerId}) entre {Start} e {End}...", taker.Name, taker.Id, startUtc.ToString("HH:mm:ss"), endUtc.ToString("HH:mm:ss"));
 
@@ -72,14 +85,13 @@ public class LightningDataService
             await using var conn = new NpgsqlConnection(npgsqlDsn);
             await conn.OpenAsync(ct);
 
-            // Filter roughly by bounding box and precisely by Haversine in C#
+            // Filter roughly by bounding box using GIST index (geom) and precisely by Haversine in C#
             var sql = @"
                 SELECT id, kind, event_time, latitude, longitude, intensity
                 FROM lightning_events
                 WHERE event_time >= @startUtc AND event_time <= @endUtc
                   AND kind = @kind
-                  AND latitude BETWEEN @minLat AND @maxLat
-                  AND longitude BETWEEN @minLon AND @maxLon
+                  AND geom && ST_MakeEnvelope(@minLon, @minLat, @maxLon, @maxLat, 4326)
                 ORDER BY event_time DESC
                 LIMIT @limit
             ";
@@ -140,24 +152,12 @@ public class LightningDataService
         int maxPoints = 1000000,
         CancellationToken ct = default)
     {
-        var dsn = _config.GetPostgresDsn();
-        if (string.IsNullOrWhiteSpace(dsn))
+        var npgsqlDsn = GetNpgsqlConnectionString();
+        if (npgsqlDsn == null)
         {
             _logger.LogWarning("LIGHTNING_TRACKER_PG_DSN is not configured.");
             return new List<LightningEvent>();
         }
-
-        var parts = dsn.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var npgsqlDsn = string.Join(";", parts.Select(p =>
-        {
-            var pair = p.Split('=', 2);
-            if (pair.Length != 2) return p;
-            var key = pair[0].ToLowerInvariant();
-            var val = pair[1];
-            if (key == "dbname") key = "Database";
-            else if (key == "user") key = "Username";
-            return $"{key}={val}";
-        })) + ";";
 
         // South America bounding box
         double minLat = -60.0, maxLat = 15.0;
@@ -175,8 +175,7 @@ public class LightningDataService
                 FROM lightning_events
                 WHERE event_time >= @startUtc AND event_time <= @endUtc
                   AND kind = @kind
-                  AND latitude BETWEEN @minLat AND @maxLat
-                  AND longitude BETWEEN @minLon AND @maxLon
+                  AND geom && ST_MakeEnvelope(@minLon, @minLat, @maxLon, @maxLat, 4326)
                 ORDER BY event_time DESC
                 LIMIT @limit
             ";

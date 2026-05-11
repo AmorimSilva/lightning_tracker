@@ -12,6 +12,23 @@ const takerIcon = L.divIcon({
   iconAnchor: [14, 14],
 })
 
+// Custom X icons for nowcast projections
+const PROJECTION_COLORS = {
+  15: '#ff3d00', // Red
+  30: '#ffea00', // Yellow
+  60: '#00e676', // Green
+}
+
+const getProjectionIcon = (minutes) => {
+  const color = PROJECTION_COLORS[minutes] || '#ffffff'
+  return L.divIcon({
+    className: 'lt-projection-icon lt-projection-flash',
+    html: `<svg width="24" height="24" viewBox="0 0 24 24"><line x1="4" y1="4" x2="20" y2="20" stroke="${color}" stroke-width="5" stroke-linecap="round"/><line x1="20" y1="4" x2="4" y2="20" stroke="${color}" stroke-width="5" stroke-linecap="round"/></svg>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+  })
+}
+
 const RING_COLORS = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728']
 const RING_RADII = [30, 50, 100, 200]
 
@@ -272,37 +289,31 @@ export default function LightningMap({
                 </Polygon>
               )}
 
-              {/* Displacement Vector (Seta) */}
-              {next15 && (
+              {/* Displacement Vector (Seta) - goes until 60 min */}
+              {projections.length > 0 && (
                 <Polyline
                   positions={[
                     [cell.centroidLat, cell.centroidLon],
-                    [next15.lat, next15.lon]
+                    [projections[projections.length - 1].lat, projections[projections.length - 1].lon]
                   ]}
                   pathOptions={{
                     color: '#ffffff',
-                    weight: 3,
-                    dashArray: '5, 5',
-                    opacity: 0.8,
+                    weight: 2.5,
+                    dashArray: '8, 8',
+                    opacity: 0.7,
                   }}
                 />
               )}
-
-              {/* Future Projections (15, 30, 60 min) */}
-              {projections.map((proj, i) => (
-                <CircleMarker
+              
+              {/* Future Projections (15, 30, 60 min) as thick X markers */}
+              {projections.map((proj) => (
+                <Marker
                   key={`proj-${cell.cellId}-${proj.minutes}`}
-                  center={[proj.lat, proj.lon]}
-                  radius={4 + i * 2}
-                  pathOptions={{
-                    color: '#ffffff',
-                    fillColor: '#ffea00',
-                    fillOpacity: 0.4 + (1 - i * 0.2),
-                    weight: 1,
-                  }}
+                  position={[proj.lat, proj.lon]}
+                  icon={getProjectionIcon(proj.minutes)}
                 >
                   <Tooltip>Impacto em {proj.minutes} min</Tooltip>
-                </CircleMarker>
+                </Marker>
               ))}
             </Fragment>
           );

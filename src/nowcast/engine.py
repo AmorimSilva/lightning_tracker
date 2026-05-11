@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 FRAME_WINDOW_SEC = 300        # 5-minute frames
 NUM_FRAMES = 6                # Analyse last 30 minutes (6 × 5min)
 LOOKBACK_MINUTES = 30         # Total lookback window
-EPS_KM = 25.0
+EPS_KM = 35.0
 MIN_SAMPLES = 5
 
 

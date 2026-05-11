@@ -145,6 +145,28 @@
   flex-shrink: 0;
 }
 
+/* Nowcast Projection X markers */
+.lt-projection-icon {
+  background: none !important;
+  border: none !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lt-projection-icon svg {
+  filter: drop-shadow(0 0 2px rgba(0,0,0,0.5));
+}
+
+.lt-projection-flash {
+  animation: lt-flash-white 1.5s ease-in-out infinite;
+}
+
+@keyframes lt-flash-white {
+  0%, 100% { filter: drop-shadow(0 0 1px white); stroke: inherit; }
+  50% { filter: drop-shadow(0 0 8px white); stroke: #ffffff !important; }
+}
+
 /* Nowcast Tooltip */
 .lt-nowcast-tooltip {
   padding: 4px;
