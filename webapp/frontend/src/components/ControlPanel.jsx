@@ -28,8 +28,6 @@ export default function ControlPanel({
   onEndLocalChange,
   backgroundIr,
   onBackgroundIrChange,
-  showMap,
-  onShowMapChange,
   showRings,
   onShowRingsChange,
   accumulatedMode,
