@@ -389,13 +389,11 @@ function App() {
   }
 
   function changeVisMode(nextVisMode) {
-    if (nextVisMode === 'points' && String(takerId) === '0') return
     setVisMode(nextVisMode)
     setMode(nextVisMode === 'density' ? 2 : 1)
   }
 
   function changeTaker(nextTakerId) {
-    if (visMode === 'points' && String(nextTakerId) === '0') return
     setTakerId(nextTakerId)
   }
 

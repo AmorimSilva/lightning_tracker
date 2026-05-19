@@ -39,11 +39,7 @@ export default function ControlPanel({
   onReset,
   animating,
 }) {
-  const selectedTaker = takers.find((t) => String(t.id) === String(takerId))
-  const isSouthAmericaSelected = String(takerId) === '0'
-  const takerOptions = visMode === 'points'
-    ? takers.filter((t) => String(t.id) !== '0')
-    : takers
+  const takerOptions = takers
 
   return (
     <div className="lt-ctrl">
@@ -88,11 +84,7 @@ export default function ControlPanel({
           onChange={(e) => onVisModeChange(e.target.value)}
         >
           {VIS_MODES.map((v) => (
-            <option
-              key={v.value}
-              value={v.value}
-              disabled={v.value === 'points' && isSouthAmericaSelected}
-            >
+            <option key={v.value} value={v.value}>
               {v.label}
             </option>
           ))}
