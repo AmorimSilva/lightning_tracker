@@ -28,8 +28,6 @@ export default function ControlPanel({
   onEndLocalChange,
   backgroundIr,
   onBackgroundIrChange,
-  showMap,
-  onShowMapChange,
   showRings,
   onShowRingsChange,
   accumulatedMode,
@@ -39,7 +37,7 @@ export default function ControlPanel({
   onReset,
   animating,
 }) {
-  const selectedTaker = takers.find((t) => String(t.id) === String(takerId))
+  const takerOptions = takers
 
   return (
     <div className="lt-ctrl">
@@ -51,7 +49,7 @@ export default function ControlPanel({
           value={takerId}
           onChange={(e) => onTakerChange(e.target.value)}
         >
-          {takers.map((t) => (
+          {takerOptions.map((t) => (
             <option key={t.id} value={String(t.id)}>
               {t.name}
             </option>
